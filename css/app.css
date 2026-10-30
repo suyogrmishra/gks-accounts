@@ -274,3 +274,11 @@ td input, td select { padding: .35rem .45rem; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Project budget */
+.card.alert { padding: 14px 18px; border-left: 4px solid var(--warn); background: var(--warn-bg); color: var(--ink); }
+.card.alert.bad { border-left-color: var(--bad); background: var(--bad-bg); }
+.warn-text { color: var(--warn); }
+.bar.near > span { background: var(--warn); }
+td .bar, .stat .bar, .boq-stats .bar { margin-top: 6px; }
+.paste-box textarea { width: 100%; font-family: var(--mono); font-size: .85rem; }

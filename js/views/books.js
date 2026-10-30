@@ -5,6 +5,7 @@ import { TYPES, money, qtyFmt, r2, sum, plEffect, gstEffect, tdsEffect, accountE
 import { $, $$, esc, html, raw, options, modal, fmtDate, fmtMonth, today, table, downloadCSV, printHTML, debounce } from '../ui.js';
 import { viewVoucher } from './entry.js';
 import { go } from '../app.js';
+import { analyseProject } from '../budget.js';
 
 const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5);
 const cls = n => n < 0 ? 'neg' : n > 0 ? 'pos' : '';
@@ -30,6 +31,8 @@ export function dashboard(el) {
   const mData = months.map(m => { const mv = fyv.filter(v => v.voucher_date.startsWith(m)); const e = mv.map(plEffect); return { m, s: sum(e, x => x.sales || 0), c: sum(e, x => (x.purchases || 0) + (x.expenses || 0)) }; });
   const overdue = bills.filter(b => SALES_BILLS.includes(b.voucher_type) && pending(b) > 0.004).sort((a, b) => a.voucher_date.localeCompare(b.voucher_date)).slice(0, 6);
   const recent = [...vs].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).slice(0, 8);
+  const watch = visibleProjects().filter(p => p.active).map(analyseProject).filter(a => a.budTot > 0 && (a.status.code === 'over' || a.status.code === 'near' || a.overLines.length || a.nearLines.length))
+    .sort((x, y) => (y.status.pct || 0) - (x.status.pct || 0)).slice(0, 8);
   // balance sheet snapshot (today)
   const cashOnly = sum(accts.filter(a => a.kind === 'cash'), a => accountBalance(a.id)), bankOnly = sum(accts.filter(a => a.kind === 'bank'), a => accountBalance(a.id)), upiOnly = sum(accts.filter(a => a.kind === 'upi'), a => accountBalance(a.id));
   const ic = intercoBalances(), dueFrom = sum(ic.filter(x => x.net > 0), x => x.net), dueTo = sum(ic.filter(x => x.net < 0), x => -x.net);
@@ -64,6 +67,12 @@ export function dashboard(el) {
         <div><h4>Liabilities</h4><table><tbody>${liabilities.map(r => html`<tr class="click" data-go="${r[2]}"><td>${r[0]}</td><td class="num">${money(r[1])}</td></tr>`)}</tbody><tfoot><tr><td>Total liabilities</td><td class="num">${money(lTot)}</td></tr></tfoot></table></div></div>
         <p class="small">Net worth (assets − liabilities): <b class="${aTot - lTot < 0 ? 'neg' : 'pos'}">${money(aTot - lTot)}</b> · capital introduced − withdrawn this FY: ${money(capital)}</p></div>
     </div>
+    ${watch.length ? html`<div class="card"><h3>Project budgets to watch <button class="link small" data-go="projects">All projects</button></h3>${raw(table([
+      { label: 'Project', render: a => `<b>${esc(a.p.name)}</b><span class="sub">${esc([...a.overLines.map(r => r.b.description + ' over by ' + money(r.actual - r.budget)), ...a.nearLines.map(r => r.b.description + ' ' + Math.round(r.actual / r.budget * 100) + '% used')].slice(0, 3).join(' · '))}</span>` },
+      { label: 'Budget', num: true, render: a => money(a.budTot) }, { label: 'Spent', num: true, render: a => money(a.cost) },
+      { label: 'Status', render: a => `<span class="badge ${a.status.code === 'over' || a.overLines.length ? 'bad' : 'warn'}">${esc(a.status.code === 'over' ? a.status.label : a.overLines.length ? a.overLines.length + ' line' + (a.overLines.length > 1 ? 's' : '') + ' over' : a.status.label)}</span>` },
+      { label: 'Forecast profit', num: true, render: a => a.contract ? `<span class="${a.forecastProfit < 0 ? 'neg' : ''}">${money(a.forecastProfit)}</span>` : '' }],
+      watch, { rowAttr: a => `class="click" data-go="projects?id=${a.p.id}"` }))}</div>` : ''}
     <div class="card"><h3>Month by month: billed, collected and still due</h3>
       ${raw(table([{ label: 'Month', render: r => fmtMonth(r.m) }, { label: 'Sales billed', num: true, render: r => money(r.billedS, { blankZero: true }) }, { label: 'Received against bills', num: true, render: r => money(r.recd, { blankZero: true }) },
         { label: 'To receive (month end)', num: true, render: r => `<b>${money(r.dueR)}</b>` }, { label: 'Purchases billed', num: true, render: r => money(r.billedP, { blankZero: true }) }, { label: 'Paid against bills', num: true, render: r => money(r.paid, { blankZero: true }) },

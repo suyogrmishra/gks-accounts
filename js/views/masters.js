@@ -7,6 +7,7 @@ import { errorText } from '../backend.js';
 import { viewVoucher } from './entry.js';
 import { go, reload } from '../app.js';
 import { requireAdminPin } from '../pin.js';
+import { analyseProject, COST_TYPES, parsePasted, num } from '../budget.js';
 
 const open = root => root.addEventListener('click', e => { const tr = e.target.closest('[data-v]'); if (tr && !e.target.closest('button')) viewVoucher(tr.dataset.v); });
 async function attempt(fn, ok) { try { await fn(); await reload(); if (ok) toast(ok); return true; } catch (err) { toast(errorText(err), 'error'); return false; } }
@@ -73,13 +74,8 @@ function intercoForm() {
 export function projects(el, { query }) {
   const sel = query.get('id');
   if (sel) return projectDetail(el, sel);
-  const ps = visibleProjects(), gcIds = new Set(groupCompanies().map(c => c.id));
-  const stats = p => {
-    const vs = S.vouchers.filter(v => v.project_id === p.id && gcIds.has(v.company_id)), e = vs.map(plEffect);
-    const s = sum(e, x => x.sales || 0), c = sum(e, x => (x.purchases || 0) + (x.expenses || 0));
-    const budget = sum(S.budget.filter(b => b.project_id === p.id && b.kind === 'cost'), b => b.qty * b.rate);
-    return { s, c, profit: r2(s - c), budget };
-  };
+  const ps = visibleProjects(), memo = new Map();
+  const stats = p => { if (!memo.has(p.id)) { const a = analyseProject(p); memo.set(p.id, { s: a.billed, c: a.cost, profit: r2(a.billed - a.cost), budget: a.budTot, a }); } return memo.get(p.id); };
   const general = cv().filter(v => !v.project_id && plEffect(v) && Object.keys(plEffect(v)).length).length;
   el.innerHTML = String(html`<div class="page-head"><div><h2>Projects</h2><p>Projects are shared by all companies in the group. Figures below add up every company you can see.</p></div>
     ${canWrite() ? raw('<button class="btn primary" id="addProj">+ Add project</button>') : ''}</div>
@@ -88,7 +84,9 @@ export function projects(el, { query }) {
       { label: 'Order value', num: true, render: p => money(p.order_value, { blankZero: true }) },
       { label: 'Billed (sales)', num: true, render: p => money(stats(p).s) },
       { label: 'Cost so far', num: true, render: p => { const st = stats(p); return money(st.c) + (st.budget ? `<div class="bar ${st.c > st.budget ? 'over' : ''}" title="${Math.round(st.c / st.budget * 100)}% of budget"><span style="width:${Math.min(100, st.c / st.budget * 100)}%"></span></div>` : ''); } },
+      { label: 'Budget', render: p => { const a = stats(p).a; return a.budTot ? `<span class="badge ${a.status.cls}">${esc(a.status.label)}</span>${a.overLines.length ? `<span class="sub neg">${a.overLines.length} line${a.overLines.length > 1 ? 's' : ''} over</span>` : ''}` : '<span class="muted small">Not set</span>'; } },
       { label: 'Profit', num: true, render: p => { const x = stats(p).profit; return `<b class="${x < 0 ? 'neg' : 'pos'}">${money(x)}</b>`; } },
+      { label: 'Forecast profit', num: true, render: p => { const a = stats(p).a; return a.contract && a.budTot ? `<span class="${a.forecastProfit < 0 ? 'neg' : ''}">${money(a.forecastProfit)}</span>` : ''; } },
     ], ps, { empty: 'No projects yet.', rowAttr: p => `class="click" data-p="${p.id}"` }))}
     <p class="small muted">${general} ${general === 1 ? 'entry has' : 'entries have'} no project in ${esc(company().name)} — see <a href="#/entries?project=none">Day Book → General</a>.</p></div>`);
   el.addEventListener('click', e => { const r = e.target.closest('[data-p]'); if (r) go('projects?id=' + r.dataset.p); if (e.target.id === 'addProj') projectForm(); });
@@ -129,47 +127,82 @@ function projectDetail(el, id) {
     return { c, sales: sum(e, x => x.sales || 0), cost: sum(e, x => (x.purchases || 0) + (x.expenses || 0)), moneyIn, moneyOut,
       due: sum(cvs.filter(v => SALES_BILLS.includes(v.voucher_type)), pending), owe: sum(cvs.filter(v => PURCHASE_BILLS.includes(v.voucher_type)), pending) };
   }).filter(r => r.sales || r.cost || r.moneyIn || r.moneyOut);
+  const A = analyseProject(p), { orders, budget, lineRows, budTot } = A;
   const allBud = S.budget.filter(b => b.project_id === id).sort((a, b) => a.line_no - b.line_no);
-  const budget = allBud.filter(b => b.kind === 'cost'), orders = allBud.filter(b => b.kind === 'order');
-  const groups = [...orders.map(o => ({ o, comps: budget.filter(b => b.parent_id === o.id) })), { o: null, comps: budget.filter(b => !b.parent_id || !orders.some(o => o.id === b.parent_id)) }].filter(g => g.o || g.comps.length);
-  // actual cost & quantity per budget line, matched by item / description name
-  const actual = name => { const n = name.trim().toLowerCase(); let q = 0, a = 0; for (const v of vs.filter(x => ['purchase', 'expense'].includes(x.voucher_type))) for (const l of v.lines || []) if (String(l.description || '').trim().toLowerCase() === n) { q += Number(l.qty); a += Number(l.amount); } return { q, a }; };
-  const tot = { sales: sum(perCo, r => r.sales), cost: sum(perCo, r => r.cost) };
-  const budTot = sum(budget, b => b.qty * b.rate);
+  const groups = [...orders.map(o => ({ o, rows: lineRows.filter(r => r.b.parent_id === o.id) })), { o: null, rows: lineRows.filter(r => !r.b.parent_id || !orders.some(o => o.id === r.b.parent_id)) }].filter(g => g.o || g.rows.length);
+  const tot = { sales: A.billed, cost: A.cost };
+  const bar = (act, bud) => bud > 0 ? `<div class="bar ${act > bud + 0.004 ? 'over' : act >= bud * 0.9 ? 'near' : ''}" title="${Math.round(act / bud * 100)}% of budget"><span style="width:${Math.min(100, act / bud * 100)}%"></span></div>` : '';
+  const pct = (a, b) => b > 0 ? Math.round(a / b * 100) + '%' : '—';
   el.innerHTML = String(html`<div class="page-head"><div><button class="link small" onclick="history.back()">← Projects</button><h2>${p.name}</h2>
       <p>${[p.kind, p.owner_company_id && 'Project company: ' + companyName(p.owner_company_id), p.client_party_name, p.work_order_no && 'WO ' + p.work_order_no, p.work_order_date && fmtDate(p.work_order_date), p.days_to_complete && p.days_to_complete + ' days', completionDate(p) && 'expected completion ' + fmtDate(completionDate(p))].filter(Boolean).join(' · ')}</p></div>
-    <div class="row">${canWrite() ? raw('<button class="btn" id="editP">Edit</button>') : ''}<button class="btn" id="printP">Print</button><a class="btn" href="#/ledgers?kind=project&id=${p.id}">Ledger</a></div></div>
-    <div id="pOut"><div class="grid g4">
-      <div class="stat"><div class="k">Order value</div><div class="v">${money(p.order_value)}</div><div class="s">${p.order_value ? Math.round(tot.sales / p.order_value * 100) + '% billed' : ''}</div></div>
-      <div class="stat"><div class="k">Billed</div><div class="v">${money(tot.sales)}</div></div>
-      <div class="stat"><div class="k">Cost so far</div><div class="v">${money(tot.cost)}</div><div class="s">${budTot ? Math.round(tot.cost / budTot * 100) + '% of budget ' + money(budTot) : 'No budget set'}</div></div>
-      <div class="stat"><div class="k">Profit so far</div><div class="v ${tot.sales - tot.cost < 0 ? 'neg' : 'pos'}">${money(tot.sales - tot.cost)}</div><div class="s">${p.order_value && budTot ? 'Expected ' + money(p.order_value - budTot) : ''}</div></div></div>
+    <div class="row">${canWrite() ? raw('<button class="btn" id="editP">Edit</button>') : ''}<button class="btn" id="csvP">Export CSV</button><button class="btn" id="printP">Print</button><a class="btn" href="#/ledgers?kind=project&id=${p.id}">Ledger</a></div></div>
+    <div id="pOut">
+    ${A.overLines.length || A.status.code === 'over' || A.status.code === 'near' ? html`<div class="card alert ${A.status.code === 'over' || A.overLines.length ? 'bad' : 'warn'}"><b>Budget alert.</b>
+      ${A.status.code === 'over' ? html` Total cost ${money(A.cost)} is over the budget of ${money(budTot)} by ${money(A.cost - budTot)}.` : A.status.code === 'near' ? html` ${pct(A.cost, budTot)} of the total budget is already used.` : ''}
+      ${A.overLines.length ? html` Over budget: ${A.overLines.map(r => `${r.b.description} (${money(r.actual - r.budget)} over)`).join(', ')}.` : ''}
+      ${A.nearLines.length ? html` Nearly used up: ${A.nearLines.map(r => `${r.b.description} (${pct(r.actual, r.budget)})`).join(', ')}.` : ''}</div>` : ''}
+    <div class="grid g4">
+      <div class="stat"><div class="k">Order value</div><div class="v">${money(A.contract)}</div><div class="s">${A.contract ? pct(tot.sales, A.contract) + ' billed · ' + money(A.toBill) + ' still to bill' : ''}</div></div>
+      <div class="stat"><div class="k">Billed</div><div class="v">${money(tot.sales)}</div><div class="s">Received ${money(A.received)} · due ${money(A.custDue)}</div></div>
+      <div class="stat"><div class="k">Cost so far</div><div class="v ${A.status.code === 'over' ? 'neg' : ''}">${money(tot.cost)}</div><div class="s">${budTot ? pct(tot.cost, budTot) + ' of budget ' + money(budTot) : 'No budget set'}</div>${raw(bar(tot.cost, budTot))}</div>
+      <div class="stat"><div class="k">Profit so far</div><div class="v ${tot.sales - tot.cost < 0 ? 'neg' : 'pos'}">${money(tot.sales - tot.cost)}</div><div class="s">${A.contract && budTot ? 'Planned ' + money(A.plannedProfit) + ' · forecast ' + money(A.forecastProfit) : ''}</div></div></div>
+    ${budTot || A.contract ? html`<div class="grid g2">
+      <div class="card"><h3>Forecast at completion</h3><table><tbody>
+        <tr><td>Order value</td><td class="num">${money(A.contract)}</td></tr>
+        <tr><td>Cost so far</td><td class="num">${money(A.cost)}</td></tr>
+        <tr><td>Budget still to spend <span class="sub">unused part of each budget line</span></td><td class="num">${money(A.budgetLeft)}</td></tr>
+        <tr><td><b>Forecast total cost</b></td><td class="num"><b>${money(A.forecastCost)}</b></td></tr>
+        <tr><td><b>Forecast profit</b> <span class="sub">planned ${money(A.plannedProfit)}${A.contract ? ' (' + (Math.round(A.plannedProfit / A.contract * 1000) / 10) + '%)' : ''}</span></td><td class="num"><b class="${A.forecastProfit < 0 ? 'neg' : 'pos'}">${money(A.forecastProfit)}</b>${A.contract ? html`<span class="sub">${Math.round(A.forecastProfit / A.contract * 1000) / 10}% margin</span>` : ''}</td></tr>
+      </tbody></table><p class="small muted">Spending outside the budget lines (see “Not in budget”) raises the forecast cost. Lines already over budget count at what was spent.</p></div>
+      <div class="card"><h3>Project cash</h3><table><tbody>
+        <tr><td>Received from client</td><td class="num pos">${money(A.received)}</td></tr>
+        <tr><td>Paid to suppliers &amp; for expenses</td><td class="num neg">${money(-A.paid)}</td></tr>
+        <tr><td><b>Project cash today</b> <span class="sub">${A.cashNow < 0 ? 'you have funded this from your own money' : 'surplus held from the client'}</span></td><td class="num"><b class="${A.cashNow < 0 ? 'neg' : 'pos'}">${money(A.cashNow)}</b></td></tr>
+        <tr><td>Still to come in <span class="sub">bills due ${money(A.custDue)} + still to bill ${money(A.toBill)}</span></td><td class="num">${money(A.cashIn)}</td></tr>
+        <tr><td>Still to go out <span class="sub">supplier dues ${money(A.suppDue)} + budget left ${money(A.budgetLeft)}</span></td><td class="num">${money(-A.cashOut)}</td></tr>
+        <tr><td><b>Expected cash at completion</b></td><td class="num"><b class="${A.cashEnd < 0 ? 'neg' : 'pos'}">${money(A.cashEnd)}</b></td></tr>
+      </tbody></table><p class="small muted">Money received and paid includes GST; budget figures are before GST, so GST on the remaining purchases is extra.</p></div></div>` : ''}
     <div class="card"><h3>By company</h3>${raw(table([{ label: 'Company', render: r => esc(r.c.name) }, { label: 'Billed', num: true, render: r => money(r.sales) }, { label: 'Cost', num: true, render: r => money(r.cost) },
       { label: 'Received', num: true, render: r => money(r.moneyIn) }, { label: 'Paid', num: true, render: r => money(r.moneyOut) }, { label: 'Customer due', num: true, render: r => money(r.due) }, { label: 'Supplier due', num: true, render: r => money(r.owe) }],
       perCo, { empty: 'No entries for this project yet.' }))}</div>
+    ${A.byType.length ? html`<div class="card"><h3>Budget by cost type</h3>${raw(table([{ label: 'Cost type', render: r => `<b>${esc(r.type)}</b>` }, { label: 'Budget', num: true, render: r => money(r.budget) },
+      { label: 'Spent on budget lines', num: true, render: r => money(r.matched) }, { label: 'Spent outside budget', num: true, render: r => r.unbudgeted ? `<span class="warn-text">${money(r.unbudgeted)}</span>` : '' },
+      { label: 'Total spent', num: true, render: r => `<b>${money(r.actual)}</b>${bar(r.actual, r.budget)}` }, { label: 'Left', num: true, render: r => r.budget ? `<span class="${r.budget - r.actual < 0 ? 'neg' : ''}">${money(r.budget - r.actual)}</span>` : '' },
+      { label: 'Status', render: r => `<span class="badge ${r.status.cls}">${esc(r.status.label)}</span>` }], A.byType,
+      { foot: ['Total', money(budTot), money(sum(A.byType, r => r.matched)), money(sum(A.byType, r => r.unbudgeted)), money(sum(A.byType, r => r.actual)), money(budTot - sum(A.byType, r => r.actual)), ''] }))}</div>` : ''}
     <div class="card"><h3>Budget / BOQ vs actual ${isAdmin() ? raw('<button class="btn sm" id="editBudget">Edit budget / BOQ</button>') : ''}</h3>
-      ${!groups.length ? raw('<div class="empty">No budget yet. Add the work/order items from the PO and the materials and expenses each one needs. Lines whose names match items on purchase/expense entries are tracked automatically.</div>') : ''}
-      ${groups.map(g => { const est = sum(g.comps, b => b.qty * b.rate), val = g.o ? g.o.qty * g.o.rate : 0, unitCost = g.o && g.o.qty > 0 ? est / g.o.qty : 0, act = sum(g.comps, b => actual(b.description).a);
+      ${!groups.length ? raw('<div class="empty">No budget yet. Add the work/order items from the PO and the materials and expenses each one needs — or paste them from Excel. Lines whose names match items on purchase/expense entries are tracked automatically.</div>') : ''}
+      ${A.duplicates.length ? html`<p class="small warn-text">These names appear more than once in the budget, so spending is counted on the first one only: ${A.duplicates.join(', ')}.</p>` : ''}
+      ${groups.map(g => { const est = sum(g.rows, r => r.budget), val = g.o ? g.o.qty * g.o.rate : 0, unitCost = g.o && g.o.qty > 0 ? est / g.o.qty : 0, act = sum(g.rows, r => r.actual);
         return html`<div class="boq-block">${g.o ? html`<div class="row between"><h4 style="margin:0">${g.o.description}</h4><span class="muted small">${qtyFmt(g.o.qty)} ${g.o.unit || ''} × ${money(g.o.rate)} = <b>${money(val)}</b></span></div>
           <div class="grid g4 boq-stats">${g.o.profit_percent != null ? html`<div><span class="k">Allowed basic cost / ${g.o.unit || 'unit'} (${g.o.profit_percent}% profit)</span><b>${money(g.o.rate * (1 - g.o.profit_percent / 100))}</b></div>
             <div><span class="k">Target profit / ${g.o.unit || 'unit'}</span><b>${money(g.o.rate * g.o.profit_percent / 100)}</b></div>` : ''}
           <div><span class="k">Actual estimated cost / ${g.o.unit || 'unit'}</span><b class="${g.o.profit_percent != null && unitCost > g.o.rate * (1 - g.o.profit_percent / 100) ? 'neg' : ''}">${money(unitCost)}</b></div>
           <div><span class="k">Actual profit / ${g.o.unit || 'unit'}</span><b class="${g.o.rate - unitCost < 0 ? 'neg' : 'pos'}">${money(g.o.rate - unitCost)}</b></div>
           <div><span class="k">Expected profit</span><b class="${val - est < 0 ? 'neg' : 'pos'}">${money(val - est)} (${val ? (Math.round((val - est) / val * 1000) / 10) + '%' : '—'})</b></div>
-          <div><span class="k">Spent so far</span><b class="${act > est ? 'neg' : ''}">${money(act)}</b></div></div>` : html`<h4>Other budget lines</h4>`}
-          ${raw(table([{ label: 'Type', render: b => esc(b.cost_type || 'Material') }, { label: 'Material / expense', render: b => esc(b.description) }, { label: 'Budget qty', num: true, render: b => qtyFmt(b.qty) + ' ' + esc(b.unit || '') }, { label: 'Used qty', num: true, render: b => qtyFmt(actual(b.description).q) },
-            { label: 'Rate', num: true, render: b => money(b.rate) }, { label: 'Budget', num: true, render: b => money(b.qty * b.rate) }, { label: 'Actual', num: true, render: b => { const a = actual(b.description).a; return `<span class="${a > b.qty * b.rate ? 'neg' : ''}">${money(a)}</span>`; } }],
-            g.comps, { empty: 'No materials or expenses listed for this item.', foot: ['', 'Total', '', '', '', money(est), money(act)] }))}</div>`; })}
-      ${orders.length ? html`<p class="small">BOQ order value <b>${money(sum(orders, o => o.qty * o.rate))}</b> · estimated cost <b>${money(budTot)}</b> · expected profit <b>${money(sum(orders, o => o.qty * o.rate) - budTot)}</b></p>` : ''}</div>
+          <div><span class="k">Spent so far</span><b class="${act > est ? 'neg' : ''}">${money(act)}</b>${raw(bar(act, est))}</div></div>` : html`<h4>Other budget lines</h4>`}
+          ${raw(table([{ label: 'Type', render: r => esc(r.type) }, { label: 'Material / expense', render: r => esc(r.b.description) }, { label: 'Budget qty', num: true, render: r => qtyFmt(r.budgetQty) + ' ' + esc(r.b.unit || '') },
+            { label: 'Used qty', num: true, render: r => `<span class="${r.usedQty > r.budgetQty + 0.0005 ? 'neg' : ''}">${qtyFmt(r.usedQty)}</span>` }, { label: 'Rate', num: true, render: r => money(r.b.rate) }, { label: 'Budget', num: true, render: r => money(r.budget) },
+            { label: 'Actual', num: true, render: r => `<span class="${r.status.code === 'over' ? 'neg' : ''}">${money(r.actual)}</span>${bar(r.actual, r.budget)}` }, { label: 'Left', num: true, render: r => `<span class="${r.budget - r.actual < 0 ? 'neg' : ''}">${money(r.budget - r.actual)}</span>` }],
+            g.rows, { empty: 'No materials or expenses listed for this item.', foot: ['', 'Total', '', '', '', money(est), money(act), money(est - act)] }))}</div>`; })}
+      ${orders.length ? html`<p class="small">BOQ order value <b>${money(A.boqValue)}</b> · estimated cost <b>${money(budTot)}</b> · expected profit <b>${money(A.boqValue - budTot)}</b></p>` : ''}</div>
+    ${A.unbudgeted.length ? html`<div class="card"><h3>Not in budget <span class="muted small">${money(sum(A.unbudgeted, u => u.amount))} spent on lines that match no budget line</span></h3>
+      <p class="small muted">Add these names to the budget (or use the same names on your entries) so they are tracked against a line.</p>
+      ${raw(table([{ label: 'Date', render: u => fmtDate(u.v.voucher_date) }, { label: 'Entry', render: u => `<b>${esc(u.v.voucher_no)}</b><span class="sub">${esc(TYPES[u.v.voucher_type].label)} · ${esc(companyName(u.v.company_id))}</span>` },
+        { label: 'Material / expense', render: u => esc(u.description) }, { label: 'Counted as', render: u => esc(u.type) }, { label: 'Qty', num: true, render: u => u.qty ? qtyFmt(u.qty) : '' }, { label: 'Amount', num: true, render: u => money(u.amount) }],
+        [...A.unbudgeted].sort((a, b) => b.v.voucher_date.localeCompare(a.v.voucher_date)), { rowAttr: u => `class="click" data-v="${u.v.id}"` }))}</div>` : ''}
     <div class="card"><h3>Entries</h3>${raw(table([{ label: 'Date', render: v => fmtDate(v.voucher_date) }, { label: 'Entry', render: v => `<b>${esc(v.voucher_no)}</b><span class="sub">${esc(TYPES[v.voucher_type].label)} · ${esc(companyName(v.company_id))}</span>` },
       { label: 'Party', render: v => esc(S.parties.find(x => x.id === v.party_id)?.name || '') }, { label: 'Amount', num: true, render: v => money(v.total_amount) }],
       [...vs].sort((a, b) => b.voucher_date.localeCompare(a.voucher_date)), { empty: 'No entries.', rowAttr: v => `class="click" data-v="${v.id}"` }))}</div></div>`);
   open(el);
   $('#editP', el)?.addEventListener('click', () => projectForm(p));
   $('#printP', el).onclick = () => printHTML(`Project — ${p.name}`, $('#pOut', el).innerHTML);
+  $('#csvP', el).onclick = () => downloadCSV(`Budget ${p.name}`, ['Work item', 'Cost type', 'Material / expense', 'Unit', 'Budget qty', 'Used qty', 'Rate', 'Budget', 'Actual', 'Left', 'Status'],
+    [...lineRows.map(r => [orders.find(o => o.id === r.b.parent_id)?.description || '', r.type, r.b.description, r.b.unit || '', r.budgetQty, r.usedQty, r.b.rate, r.budget, r.actual, r2(r.budget - r.actual), r.status.label]),
+     ...A.unbudgeted.map(u => ['Not in budget', u.type, u.description, '', u.qty, u.qty, '', 0, u.amount, -u.amount, `${u.v.voucher_no} ${u.v.voucher_date}`]),
+     ['', '', 'TOTAL', '', '', '', '', budTot, A.cost, r2(budTot - A.cost), A.status.label]]);
   $('#editBudget', el)?.addEventListener('click', () => budgetForm(p, allBud));
 }
-const COST_TYPES = ['Material', 'Labour', 'Transport', 'Overhead', 'Other'];
 function budgetForm(p, lines) {
   // groups: one per work/order item (with its materials & expenses), plus loose cost lines
   const orders = lines.filter(l => l.kind === 'order');
@@ -179,11 +212,17 @@ function budgetForm(p, lines) {
   if (!groups.length) groups.push({ o: { description: '', unit: 'Sqm', qty: '', rate: '' }, comps: [{ cost_type: 'Material', description: '', unit: '', qty: '', rate: '' }], profit: '' });
   const its = items().map(i => i.name);
   const n = x => Number(x) || 0;
+  const paste = { open: false, target: 'items', text: '' };
   const m = modal('Budget / BOQ — ' + p.name, '<div id="bf"></div>', { wide: true });
   const totals = g => { const est = sum(g.comps, c => n(c.qty) * n(c.rate)), val = g.o ? n(g.o.qty) * n(g.o.rate) : 0; return { est, val, unit: g.o && n(g.o.qty) ? est / n(g.o.qty) : 0 }; };
   const draw = () => {
     $('#bf', m.el).innerHTML = String(html`<datalist id="budItems">${its.map(x => html`<option value="${x}">`)}</datalist>
-      <p class="small muted">Add each work / order item from the purchase order (e.g. "Unitized curtain wall — Sqm"), then the materials, labour and other costs needed to complete it.</p>
+      <div class="row between"><p class="small muted" style="margin:0">Add each work / order item from the purchase order (e.g. "Unitized curtain wall — Sqm"), then the materials, labour and other costs needed to complete it.</p>
+        <button class="btn sm" id="pasteToggle">${paste.open ? 'Close paste' : 'Paste from Excel'}</button></div>
+      ${paste.open ? html`<div class="boq-block paste-box"><div class="form-grid"><label class="span2">Paste into<select id="pasteTarget">${raw(options([['items', 'New work / order items'], ...groups.map((g, gi) => g.o ? ['g' + gi, 'Materials for: ' + (g.o.description || 'work item ' + (gi + 1))] : ['g' + gi, 'Other budget lines']), ['loose', 'Other budget lines (not tied to a work item)']].filter((x, i, a) => a.findIndex(y => y[1] === x[1]) === i), paste.target))}</select></label></div>
+        <p class="small muted">Copy the rows in Excel and paste here. Columns in this order — ${paste.target === 'items' ? raw('<b>Description, Unit, Qty, Rate, Profit %</b> (profit optional)') : raw('<b>Description, Unit, Qty, Rate, Cost type</b> (cost type optional: Material, Labour, Transport, Overhead, Other)')}. Heading rows and blank rows are skipped.</p>
+        <textarea id="pasteText" rows="6" placeholder="${paste.target === 'items' ? 'Unitized curtain wall	Sqm	1200	9500	15' : 'Aluminium profile	Kg	5400	310	Material'}">${paste.text}</textarea>
+        <div class="row end"><span class="small" id="pasteMsg"></span><button class="btn primary sm" id="pasteAdd">Add rows</button></div></div>` : ''}
       ${groups.map((g, gi) => { const t = totals(g); return html`<div class="boq-block" data-g="${gi}">
         ${g.o ? html`<div class="form-grid"><label class="span2">Work / order item<input data-o="description" value="${g.o.description}" placeholder="e.g. Unitized curtain wall system"></label>
           <label>Unit<input data-o="unit" value="${g.o.unit || ''}"></label><label>Order qty<input type="number" step="any" data-o="qty" value="${g.o.qty}"></label>
@@ -207,12 +246,32 @@ function budgetForm(p, lines) {
         <span>BOQ value <b>${money(sum(groups, g => totals(g).val))}</b> · cost <b>${money(sum(groups, g => totals(g).est))}</b></span><button class="btn primary" id="saveB">Save budget</button></div>`);
   };
   m.el.addEventListener('change', e => {
+    if (e.target.id === 'pasteTarget') { paste.target = e.target.value; paste.text = $('#pasteText', m.el).value; draw(); return; }
     const blk = e.target.closest('[data-g]'); if (!blk) return; const g = groups[blk.dataset.g];
     if (e.target.dataset.o) { if (e.target.dataset.o === 'profit') g.profit = e.target.value; else g.o[e.target.dataset.o] = e.target.value; draw(); }
     const tr = e.target.closest('tr[data-c]'); if (tr && e.target.dataset.f) { g.comps[tr.dataset.c][e.target.dataset.f] = e.target.value; draw(); }
   });
   m.el.addEventListener('click', async e => {
     const b = e.target.closest('button'); if (!b) return; const blk = b.closest('[data-g]'), g = blk && groups[blk.dataset.g];
+    if (b.id === 'pasteToggle') { paste.open = !paste.open; draw(); return; }
+    if (b.id === 'pasteAdd') {
+      paste.text = $('#pasteText', m.el).value; paste.target = $('#pasteTarget', m.el).value;
+      const rows = parsePasted(paste.text).filter(r => r[0] && Number.isFinite(num(r[2])) && num(r[2]) > 0);
+      if (!rows.length) { $('#pasteMsg', m.el).textContent = 'No rows found — each row needs a description and a quantity in the 3rd column.'; return; }
+      const typeOf = t => COST_TYPES.find(x => x.toLowerCase() === String(t || '').trim().toLowerCase()) || (/labou?r/i.test(t || '') ? 'Labour' : 'Material');
+      const rate = r => Number.isFinite(num(r[3])) ? num(r[3]) : '';
+      const comps = rows.map(r => ({ cost_type: typeOf(r[4]), description: r[0], unit: r[1] || '', qty: num(r[2]), rate: rate(r) }));
+      const clean = gr => { gr.comps = gr.comps.filter(c => String(c.description).trim() || n(c.qty) || n(c.rate)); };
+      if (paste.target === 'items') {
+        // drop the empty starter item, then add one work item per row
+        const blank = groups.findIndex(x => x.o && !String(x.o.description).trim() && !x.comps.some(c => String(c.description).trim())); if (blank >= 0) groups.splice(blank, 1);
+        const at = groups.filter(x => x.o).length;
+        groups.splice(at, 0, ...rows.map(r => ({ o: { description: r[0], unit: r[1] || '', qty: num(r[2]), rate: rate(r) }, comps: [], profit: Number.isFinite(num(r[4])) ? num(r[4]) : '' })));
+      } else if (paste.target === 'loose') {
+        let lg = groups.find(x => !x.o); if (!lg) { lg = { o: null, comps: [] }; groups.push(lg); } clean(lg); lg.comps.push(...comps);
+      } else { const tg = groups[Number(paste.target.slice(1))]; clean(tg); tg.comps.push(...comps); }
+      paste.text = ''; paste.open = false; draw(); toast(`${rows.length} row${rows.length > 1 ? 's' : ''} added — check them, then Save budget`); return;
+    }
     if (b.dataset.delc != null && g) { g.comps.splice(Number(b.dataset.delc), 1); draw(); }
     if (b.hasAttribute('data-addc') && g) { g.comps.push({ cost_type: 'Material', description: '', unit: '', qty: '', rate: '' }); draw(); }
     if (b.hasAttribute('data-delg') && g) { groups.splice(Number(blk.dataset.g), 1); draw(); }

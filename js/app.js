@@ -52,7 +52,6 @@ function showLogin() {
     if (!email) return msg('Enter your email first, then tap "Forgot password?".', true);
     try { await S.backend.resetPassword(email); msg('Check your email for a link to set a new password.'); } catch (err) { msg(errorText(err), true); }
   };
-  $('#demoBtn').onclick = () => { localStorage.setItem('gks2.mode', 'demo'); location.reload(); };
   form.onsubmit = async e => {
     e.preventDefault(); const f = formData(form); $('#loginBtn').disabled = true;
     try {
@@ -104,8 +103,7 @@ function fatal(err) {
   const notSetUp = /schema must be one of|Invalid schema|relation "?acc\.|PGRST106|PGRST205/i.test(String(err?.message || err) + ' ' + (err?.code || ''));
   $('#view').innerHTML = `<div class="card stack"><h2>Could not load your books</h2><p class="neg">${esc(errorText(err))}</p>
     ${notSetUp ? `<p>The new database tables are probably not installed yet. Run the SQL files in <code>db/</code> in your Supabase SQL editor (see README), and add <code>acc</code> to Settings → API → Exposed schemas.</p>` : ''}
-    <div class="row"><button class="btn" onclick="location.reload()">Try again</button><button class="btn" id="fatalDemo">Open demo instead</button></div></div>`;
-  $('#fatalDemo').onclick = () => { localStorage.setItem('gks2.mode', 'demo'); location.reload(); };
+    <div class="row"><button class="btn" onclick="location.reload()">Try again</button></div></div>`;
 }
 
 function firstCompany() {
@@ -205,4 +203,4 @@ function armIdle() {
 ['pointerdown', 'keydown', 'touchstart'].forEach(ev => document.addEventListener(ev, armIdle, { passive: true }));
 
 onChange(() => {});
-boot();
+boot().catch(err => { const b = document.getElementById('boot'); b.classList.remove('hidden'); b.textContent = errorText(err); });

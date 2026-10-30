@@ -64,8 +64,9 @@ class SupabaseBackend {
 }
 
 export function createBackend() {
-  const wantDemo = CONFIG.mode !== 'live' || new URLSearchParams(location.search).has('demo') || localStorage.getItem('gks2.mode') === 'demo' || !CONFIG.supabaseKey;
-  if (wantDemo || !window.supabase) return new DemoBackend();
+  if (CONFIG.mode !== 'live' || !CONFIG.supabaseKey) return new DemoBackend();
+  try { localStorage.removeItem('gks2.mode'); localStorage.removeItem('gks2.demo.db.v4'); } catch {}
+  if (!window.supabase) throw new Error('Could not load the database library. Check your internet connection and reload.');
   return new SupabaseBackend();
 }
 

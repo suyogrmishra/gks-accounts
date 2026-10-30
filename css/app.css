@@ -195,8 +195,8 @@ td input, td select { padding: .35rem .45rem; }
 @media (max-width: 480px) { .form-grid { grid-template-columns: minmax(0, 1fr); } .stat .v { font-size: 1.2rem; } }
 
 
-/* Corporate workspace — presentation only; entry and storage behavior unchanged. */
-:root, [data-theme="green"], [data-theme="blue"] {
+/* Corporate workspace layout (all themes). Navy colours apply only to the Navy theme. */
+[data-theme="navy"] {
   --brand: #102840; --brand-2: #1c3f60; --accent: #467ba5;
   --accent-ink: #234e73; --accent-soft: #eaf0f7;
   --bg: #f3f5f9; --card: #ffffff; --ink: #182b41; --muted: #586b80;

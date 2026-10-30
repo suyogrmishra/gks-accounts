@@ -1,7 +1,8 @@
 // Pure accounting calculations shared by every screen (and by demo mode).
 // Amounts are rounded to paise with r2(); never compare floats without it.
 
-export const r2 = n => Math.round((Number(n) || 0) * 100 + Number.EPSILON * 100) / 100;
+// Half away from zero, like the database's round(x, 2): 1.005 → 1.01 and -1.005 → -1.01
+export const r2 = n => { const x = Number(n) || 0; const r = Math.round(Math.abs(x) * 100 * (1 + Number.EPSILON)) / 100; return x < 0 ? -r : r; };
 export const sum = (rows, f) => r2(rows.reduce((s, x) => s + (Number(f(x)) || 0), 0));
 
 export const TYPES = {
@@ -169,6 +170,6 @@ export function amountInWords(n) {
     if (cr) parts.push(words(cr) + ' Crore'); if (lk) parts.push(two(lk) + ' Lakh'); if (th) parts.push(two(th) + ' Thousand'); if (rest) parts.push(three(rest));
     return parts.join(' ');
   };
-  const x = r2(n), rs = Math.floor(x), p = Math.round((x - rs) * 100);
-  return 'Rupees ' + words(rs) + (p ? ' and ' + two(p) + ' Paise' : '') + ' Only';
+  const v = r2(n), x = Math.abs(v), rs = Math.floor(x), p = Math.round((x - rs) * 100);
+  return (v < 0 ? 'Minus ' : '') + 'Rupees ' + words(rs) + (p ? ' and ' + two(p) + ' Paise' : '') + ' Only';
 }

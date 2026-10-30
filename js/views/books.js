@@ -20,8 +20,9 @@ export function dashboard(el) {
   const custAdv = sum(vs.filter(v => ['receipt', 'customer_credit'].includes(v.voucher_type)), unalloc), suppAdv = sum(vs.filter(v => ['payment', 'supplier_credit'].includes(v.voucher_type)), unalloc);
   const accts = accounts(), cash = sum(accts, a => accountBalance(a.id));
   const stockVal = sum(items(), i => Math.max(0, stockOf(i.id)) * avgRate(i.id));
-  const gst = fyv.reduce((a, v) => { const g = gstEffect(v); a.o += g.output || 0; a.i += g.input || 0; return a; }, { o: 0, i: 0 });
-  const tdsPay = sum(fyv, v => tdsEffect(v).payable || 0);
+  const gm = gstMonths(fyv), gst = { o: sum(gm, r => r.o), i: sum(gm, r => r.i) };
+  const gstPayable = sum(gm, r => r.payable), gstCredit = gm.at(-1).next;
+  const tdsPay = sum(fyv, v => tdsEffect(v).payable || 0), tdsRecv = sum(fyv, v => tdsEffect(v).receivable || 0);
   const capital = r2(sum(fyv.filter(v => v.voucher_type === 'capital_in'), v => v.total_amount) - sum(fyv.filter(v => v.voucher_type === 'capital_out'), v => v.total_amount));
   const stat = (k, v, s, link, tone = '') => html`<button class="stat" ${link ? raw(`data-go="${link}"`) : ''}><div class="k">${k}</div><div class="v ${tone}">${money(v)}</div><div class="s">${s}</div></button>`;
   // monthly sales vs purchases+expenses
@@ -32,10 +33,9 @@ export function dashboard(el) {
   // balance sheet snapshot (today)
   const cashOnly = sum(accts.filter(a => a.kind === 'cash'), a => accountBalance(a.id)), bankOnly = sum(accts.filter(a => a.kind === 'bank'), a => accountBalance(a.id)), upiOnly = sum(accts.filter(a => a.kind === 'upi'), a => accountBalance(a.id));
   const ic = intercoBalances(), dueFrom = sum(ic.filter(x => x.net > 0), x => x.net), dueTo = sum(ic.filter(x => x.net < 0), x => -x.net);
-  const gstNet = r2(gst.o - gst.i - Number(company().opening_gst_credit || 0));
   const assets = [['Cash in hand', cashOnly, 'banking'], ['Cash in bank', bankOnly, 'banking'], ['UPI / wallets', upiOnly, 'banking'], ['Receivable from customers', recv, 'outstanding?tab=receivable'],
-    ['Advances paid to suppliers', suppAdv, 'outstanding?tab=advances'], ['Inventory', stockVal, 'inventory'], ['Due from group companies', dueFrom, 'banking'], ['GST input credit carried', gstNet < 0 ? -gstNet : 0, 'gst']].filter(r => r[1]);
-  const liabilities = [['Payable to suppliers', pay, 'outstanding?tab=payable'], ['Advances from customers', custAdv, 'outstanding?tab=advances'], ['Due to group companies', dueTo, 'banking'], ['GST payable', gstNet > 0 ? gstNet : 0, 'gst']].filter(r => r[1]);
+    ['Advances paid to suppliers', suppAdv, 'outstanding?tab=advances'], ['Inventory', stockVal, 'inventory'], ['Due from group companies', dueFrom, 'banking'], ['GST input credit carried', gstCredit, 'gst'], ['TDS deducted by customers (FY)', tdsRecv, 'gst']].filter(r => r[1]);
+  const liabilities = [['Payable to suppliers', pay, 'outstanding?tab=payable'], ['Advances from customers', custAdv, 'outstanding?tab=advances'], ['Due to group companies', dueTo, 'banking'], ['GST payable (FY)', gstPayable, 'gst'], ['TDS deducted, to deposit (FY)', tdsPay, 'gst']].filter(r => r[1]);
   const aTot = sum(assets, r => r[1]), lTot = sum(liabilities, r => r[1]);
   // month-wise money linked to bills, and what was still due at each month end
   const monthEnd = m => new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).toISOString().slice(0, 10);
@@ -55,7 +55,7 @@ export function dashboard(el) {
       ${stat('Customer advances', custAdv, 'Received, not yet billed', 'outstanding?tab=advances')}
       ${stat('Supplier advances', suppAdv, 'Paid, not yet billed', 'outstanding?tab=advances')}
       ${stat('Inventory value', stockVal, 'At average purchase rate', 'inventory')}
-      ${stat('GST payable (FY)', r2(gst.o - gst.i - Number(company().opening_gst_credit || 0)), `Output ${money(gst.o)} · input ${money(gst.i)}`, 'gst')}
+      ${stat('GST payable (FY)', gstPayable, `Output ${money(gst.o)} · input ${money(gst.i)}${gstCredit ? ` · credit left ${money(gstCredit)}` : ''}`, 'gst')}
     </div>
     <div class="grid g2">
       <div class="card"><h3>Sales vs costs by month</h3>${raw(barChart(mData))}</div>
@@ -85,6 +85,17 @@ export function dashboard(el) {
     </div>`);
   openRows(el);
   $$('[data-go]', el).forEach(b => b.onclick = () => go(b.dataset.go));
+}
+// GST month by month with credit carried forward (same figures on the dashboard and the GST screen)
+function gstMonths(fyv) {
+  const { from } = fyBounds();
+  const months = [...Array(12)].map((_, i) => { const d = new Date(from + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + i); return d.toISOString().slice(0, 7); });
+  let carry = r2(Number(company().opening_gst_credit || 0));
+  return months.map(m => {
+    const mv = fyv.filter(v => v.voucher_date.startsWith(m)); const o = sum(mv, v => gstEffect(v).output || 0), i = sum(mv, v => gstEffect(v).input || 0);
+    const avail = r2(i + carry), payable = r2(Math.max(0, o - avail)), next = r2(Math.max(0, avail - o));
+    const row = { m, o, i, open: carry, payable, next }; carry = next; return row;
+  });
 }
 // Money sent to / received from each other group company (inter-company transfers)
 function intercoBalances() {
@@ -275,7 +286,7 @@ export function reports(el) {
     const vs = cv().filter(v => v.voucher_date >= f.from && v.voucher_date <= f.to && (!f.project || (f.project === 'none' ? !v.project_id : v.project_id === f.project)));
     const tot = { sales: 0, purchases: 0, expenses: 0 }, byCat = new Map(), byProj = new Map();
     for (const v of vs) {
-      const e = plEffect(v); for (const k in e) tot[k] += e[k];
+      const e = plEffect(v); for (const k in e) tot[k] = r2(tot[k] + e[k]);
       if (e.expenses) byCat.set(v.category_id || '', (byCat.get(v.category_id || '') || 0) + e.expenses);
       const pk = v.project_id || ''; const p = byProj.get(pk) || { sales: 0, purchases: 0, expenses: 0 }; for (const k in e) p[k] += e[k]; byProj.set(pk, p);
     }
@@ -313,14 +324,8 @@ export function reports(el) {
 
 // ───────────────────────── GST & TDS ─────────────────────────
 export function gst(el) {
-  const c = company(), fyv = cv().filter(inFY), { from } = fyBounds();
-  const months = [...Array(12)].map((_, i) => { const d = new Date(from + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + i); return d.toISOString().slice(0, 7); });
-  let carry = Number(c.opening_gst_credit || 0);
-  const rows = months.map(m => {
-    const mv = fyv.filter(v => v.voucher_date.startsWith(m)); const o = sum(mv, v => gstEffect(v).output || 0), i = sum(mv, v => gstEffect(v).input || 0);
-    const avail = r2(i + carry), payable = r2(Math.max(0, o - avail)), next = r2(Math.max(0, avail - o));
-    const row = { m, o, i, open: carry, payable, next }; carry = next; return row;
-  });
+  const c = company(), fyv = cv().filter(inFY);
+  const rows = gstMonths(fyv);
   const tdsRows = fyv.filter(v => Number(v.tds_amount) > 0);
   const tdsGroup = (kind) => { const map = new Map(); for (const v of tdsRows) { const e = tdsEffect(v); if (!e[kind]) continue; const k = (v.tds_section || '—') + '|' + (v.party_id || ''); const x = map.get(k) || { sec: v.tds_section || '—', party: v.party_id, amt: 0, base: 0, n: 0 }; x.amt += e[kind]; x.base += Number(TYPES[v.voucher_type].money ? v.total_amount : v.taxable_amount); x.n++; map.set(k, x); } return [...map.values()]; };
   const pay = tdsGroup('payable'), rec = tdsGroup('receivable');

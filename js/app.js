@@ -32,7 +32,7 @@ const ROUTES = [
 const routeMap = new Map(ROUTES.filter(r => r.length > 1).map(r => [r[0], r]));
 
 async function boot() {
-  applyTheme(localStorage.getItem('gks2.theme') || 'green');
+  applyTheme(localStorage.getItem('gks2.theme2') || 'navy');
   S.backend = createBackend();
   S.backend.onAuthChange(ev => { if (ev === 'PASSWORD_RECOVERY') askNewPassword(); if (ev === 'SIGNED_OUT') location.reload(); });
   const session = await S.backend.session().catch(() => null);
@@ -81,7 +81,7 @@ async function startApp() {
     if (S.backend.mode === 'demo') localStorage.removeItem('gks2.mode');
     await S.backend.signOut(); location.reload();
   };
-  $('#themeSelect').value = localStorage.getItem('gks2.theme') || 'green';
+  $('#themeSelect').value = localStorage.getItem('gks2.theme2') || 'navy';
   $('#themeSelect').onchange = e => applyTheme(e.target.value);
   $('#menuBtn').onclick = () => $('#app').classList.toggle('nav-open');
   $('#quickNew').onclick = () => go('new');
@@ -182,7 +182,7 @@ function route() {
 }
 function showError(view, err) { console.error(err); view.innerHTML = `<div class="card"><h3>Something went wrong on this screen</h3><p class="neg">${esc(errorText(err))}</p></div>`; }
 
-function applyTheme(t) { document.documentElement.dataset.theme = t; localStorage.setItem('gks2.theme', t); }
+function applyTheme(t) { document.documentElement.dataset.theme = t; localStorage.setItem('gks2.theme2', t); }
 
 // Install as an app (where the browser offers it)
 let installPrompt = null;

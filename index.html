@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GKS Accounts</title>
+  <meta name="theme-color" content="#0f3d33">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/app.css">
+  <!-- Supabase client: your local copy first, public CDN as a fallback -->
+  <script src="supabase-vendor.js" onerror="this.remove()"></script>
+  <script>if(!window.supabase)document.write('<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>')</script>
+</head>
+<body>
+  <div id="boot" class="boot">Loading…</div>
+
+  <!-- Sign in -->
+  <main id="login" class="login hidden">
+    <div class="login-card">
+      <div class="brand big"><span class="logo">GKS</span><div><b>GKS Accounts</b><small>Accounts · Inventory · Projects</small></div></div>
+      <form id="loginForm" class="stack">
+        <label>Email<input name="email" type="email" autocomplete="username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required minlength="6"></label>
+        <label id="nameRow" class="hidden">Your name<input name="full_name" autocomplete="name"></label>
+        <button class="btn primary" type="submit" id="loginBtn">Sign in</button>
+        <div class="row between small">
+          <a href="#" id="toggleSignup">Create an account</a>
+          <a href="#" id="forgotLink">Forgot password?</a>
+        </div>
+        <p id="loginMsg" class="msg" role="status"></p>
+      </form>
+      <div class="demo-box">
+        <p class="small muted">Want to look around first? Demo mode runs only in this browser with sample data — nothing touches your live books.</p>
+        <button class="btn" id="demoBtn" type="button">Try the demo</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- App shell -->
+  <div id="app" class="app hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="brand"><span class="logo">GKS</span><div><b>GKS Accounts</b><small id="userEmail"></small></div></div>
+      <nav id="nav" aria-label="Main"></nav>
+      <div class="side-foot">
+        <span id="modeBadge" class="badge"></span>
+        <button class="btn ghost hidden" id="installBtn">Install app</button>
+        <select id="themeSelect" aria-label="Theme">
+          <option value="green">Green</option><option value="blue">Blue</option><option value="purple">Purple</option><option value="orange">Orange</option><option value="dark">Dark</option>
+        </select>
+        <button class="btn ghost" id="logoutBtn">Sign out</button>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu">☰</button>
+        <select id="companySelect" aria-label="Company"></select>
+        <select id="fySelect" aria-label="Financial year"></select>
+        <div class="grow"></div>
+        <button class="btn primary" id="quickNew">+ New entry</button>
+        <button class="icon-btn" id="refreshBtn" title="Refresh data" aria-label="Refresh">⟳</button>
+      </header>
+      <section id="view" class="view" tabindex="-1"></section>
+    </div>
+  </div>
+  <div id="printArea" class="print-area"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

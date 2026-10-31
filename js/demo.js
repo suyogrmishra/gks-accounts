@@ -1,6 +1,7 @@
 // Demo backend: a small in-browser database (localStorage) that follows the same rules
 // as the real database functions, so the whole app can be tried without touching live data.
 import { r2, voucherTotals, lineAmount, fyLabel, allocationTargets, TYPES, BILL_TYPES } from './calc.js';
+import { payrollFields, settingsOf, rowNet, structureOf, grossOf, daysInMonth } from './payroll.js';
 
 const KEY = 'gks2.demo.db.v4';
 const USER = { id: 'demo-user', email: 'demo@gks.local' };
@@ -8,7 +9,7 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random
 const now = () => new Date().toISOString();
 const TABLES = ['groups', 'companies', 'profiles', 'company_members', 'invitations', 'projects', 'member_projects', 'project_budget_lines',
   'parties', 'items', 'categories', 'money_accounts', 'money_account_companies', 'counters', 'vouchers', 'voucher_lines', 'allocations',
-  'employees', 'payroll', 'fixed_costs', 'fixed_cost_payments', 'audit_log'];
+  'employees', 'payroll', 'fixed_costs', 'fixed_cost_payments', 'statutory_payments', 'audit_log'];
 const fail = m => { throw new Error(m); };
 
 export class DemoBackend {
@@ -82,13 +83,15 @@ export class DemoBackend {
     if (table === 'projects') return { kind: 'combined', active: true, order_value: 0, ...row };
     if (table === 'money_accounts') return { active: true, ...row };
     if (table === 'money_account_companies') return { opening_balance: 0, ...row };
-    if (table === 'employees') return { active: true, monthly_salary: 0, ...row };
+    if (table === 'employees') { const e = { active: true, monthly_salary: 0, gender: 'M', pf_member: true, pf_on_ceiling: true, esic_member: true, pt_applicable: true, hra: 0, conveyance: 0, other_allowance: 0, basic: 0, ...row };
+      if (!Number(e.basic) && !Number(e.hra) && !Number(e.conveyance) && !Number(e.other_allowance)) e.basic = Number(e.monthly_salary); e.monthly_salary = grossOf(structureOf(e)); return e; }
     if (table === 'fixed_costs') return { active: true, ...row };
     if (table === 'payroll') {
       const emp = this.db.employees.find(e => e.id === row.employee_id);
-      const r = { working_days: 30, present_days: 30, bonus: 0, deduction: 0, ...row };
-      if (!Number(r.base_salary)) r.base_salary = Number(emp?.monthly_salary || 0);
-      return r;
+      const dm = row.month ? daysInMonth(row.month) : 30;
+      const r = { working_days: dm, present_days: dm, bonus: 0, deduction: 0, overtime: 0, tds: 0, ...row };
+      const cfg = settingsOf(this.db.companies.find(c => c.id === r.company_id));
+      return { ...r, ...payrollFields(emp, r, cfg, { keepPt: row.pt != null }) };
     }
     return row;
   }
@@ -298,6 +301,7 @@ export class DemoBackend {
     this._del('allocations', a => a.from_voucher_id === p_id || a.to_voucher_id === p_id);
     for (const pr of this.db.payroll.filter(x => x.voucher_id === p_id)) this._upd('payroll', pr, { voucher_id: null, paid_on: null });
     this._del('fixed_cost_payments', f => f.voucher_id === p_id);
+    this._del('statutory_payments', f => f.voucher_id === p_id);
   }
   rpc_save_interco({ p }) {
     const a = this.db.companies.find(c => c.id === p.from_company_id), b = this.db.companies.find(c => c.id === p.to_company_id);
@@ -359,7 +363,7 @@ export class DemoBackend {
       let cat = this.db.categories.find(c => c.company_id === pr.company_id && c.name.toLowerCase() === 'salary');
       if (!cat) cat = this._ins('categories', { company_id: pr.company_id, name: 'Salary', kind: 'expense', active: true });
       if (!['admin', 'accountant'].includes(this.role(pr.company_id))) fail('Only an admin or accountant can pay salaries.');
-      const net = payrollNet(pr); if (net <= 0) fail(`Net salary for ${emp?.name} must be above zero before payment.`);
+      const net = rowNet(pr); if (net <= 0) fail(`Net salary for ${emp?.name} must be above zero before payment.`);
       const key = x => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
       const advCat = this.db.categories.filter(c => c.company_id === pr.company_id && c.name.toLowerCase() === 'employee advance').map(c => c.id);
       const adv = r2(this.db.vouchers.filter(x => x.company_id === pr.company_id && !x.deleted_at && x.voucher_type === 'expense' && advCat.includes(x.category_id) && x.voucher_date.slice(0, 7) === pr.month.slice(0, 7)
@@ -373,6 +377,21 @@ export class DemoBackend {
       this._upd('payroll', pr, { voucher_id: v.id, paid_on: p_date }); n++;
     }
     return n;
+  }
+  rpc_pay_statutory({ p_company, p_month, p_kind, p_date, p_account, p_amount }) {
+    if (!['admin', 'accountant'].includes(this.role(p_company))) fail('Only an admin or accountant can pay PF, ESIC, PT or TDS.');
+    const amt = r2(p_amount); if (!(amt > 0)) fail('Enter an amount more than zero.');
+    const due = statutoryDue(this.db.payroll.filter(x => x.company_id === p_company && x.month === p_month), this.db.statutory_payments.filter(s => s.company_id === p_company && s.month === p_month && this.db.vouchers.some(v => v.id === s.voucher_id && !v.deleted_at)), p_kind);
+    if (amt > due + 0.004) fail(`Only ${due.toFixed(2)} is due for this month.`);
+    const names = { pf: ['PF Contribution', 'PF'], esic: ['ESIC Contribution', 'ESIC'], pt: ['Professional Tax', 'Professional Tax'], tds: ['TDS on Salary', 'TDS on salary'] }[p_kind] || fail('Unknown due.');
+    let cat = this.db.categories.find(c => c.company_id === p_company && c.name.toLowerCase() === names[0].toLowerCase());
+    if (!cat) cat = this._ins('categories', { company_id: p_company, name: names[0], kind: 'expense', active: true });
+    const kind = this.db.money_accounts.find(a => a.id === p_account)?.kind;
+    const mon = new Date(p_month + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' });
+    const v = this.rpc_save_voucher({ p: { company_id: p_company, voucher_type: 'expense', voucher_date: p_date, account_id: p_account, payment_mode: kind === 'cash' ? 'cash' : 'bank', category_id: cat.id, book_here: true,
+      gst_mode: 'none', notes: `${names[1]} for ${mon} (employee + employer share)`, lines: [{ description: `${names[1]} ${mon}`, amount: amt }] } });
+    this.db.statutory_payments.push({ id: uid(), company_id: p_company, month: p_month, kind: p_kind, amount: amt, voucher_id: v.id, paid_on: p_date, created_at: now() });
+    this.save(); return v.id;
   }
   rpc_pay_fixed_cost({ p_fixed_cost, p_date, p_account, p_amount }) {
     const f = this.db.fixed_costs.find(x => x.id === p_fixed_cost); if (!f) fail('Fixed cost not found.');
@@ -447,8 +466,9 @@ export class DemoBackend {
     S({ voucher_type: 'expense', voucher_date: '2026-10-19', account_id: cash1, payment_mode: 'cash', project_id: pr2, category_id: cat('Site Expenses'), gst_mode: 'none', notes: 'Paid at site for City Mall job', lines: [{ description: 'Scaffolding hire', amount: 12000 }] });
     S({ voucher_type: 'capital_in', voucher_date: '2026-04-05', account_id: bank.id, payment_mode: 'bank', total_amount: 1000000, notes: 'Partner capital' });
     this.rpc_save_interco({ p: { from_company_id: c1, to_company_id: c2, from_account_id: bank.id, to_account_id: bank.id, voucher_date: '2026-10-18', amount: 150000, project_id: pr1 } });
-    const e1 = this._ins('employees', { company_id: c1, name: 'Sunil Patil', designation: 'Site Supervisor', monthly_salary: 32000, project_id: pr1, joining_date: '2025-04-01', active: true });
-    this._ins('employees', { company_id: c1, name: 'Anita Desai', designation: 'Accounts Executive', monthly_salary: 28000, joining_date: '2024-07-15', active: true });
+    const e1 = this._ins('employees', this._defaults('employees', { company_id: c1, name: 'Sunil Patil', designation: 'Site Supervisor', basic: 16000, hra: 6400, conveyance: 1600, other_allowance: 8000, project_id: pr1, joining_date: '2025-04-01', uan: '100912345678' }));
+    this._ins('employees', this._defaults('employees', { company_id: c1, name: 'Anita Desai', designation: 'Accounts Executive', gender: 'F', basic: 14000, hra: 5600, conveyance: 1600, other_allowance: 6800, joining_date: '2024-07-15' }));
+    this._ins('employees', this._defaults('employees', { company_id: c1, name: 'Ramesh Jadhav', designation: 'Fitter', basic: 10500, hra: 2100, conveyance: 1000, other_allowance: 1400, project_id: pr1, joining_date: '2025-11-03', esic_no: '3100123456' }));
     this._ins('payroll', this._defaults('payroll', { company_id: c1, employee_id: e1.id, month: '2026-09-01', present_days: 28 }));
     this._ins('fixed_costs', { company_id: c1, name: 'Factory rent', category_id: cat('Rent'), monthly_amount: 45000, start_month: '2026-04-01', active: true });
     this.db.audit_log = [];
@@ -456,7 +476,13 @@ export class DemoBackend {
   }
 }
 
-export const payrollNet = pr => r2(r2(Number(pr.base_salary) * Number(pr.present_days) / (Number(pr.working_days) || 1)) + Number(pr.bonus || 0) - Number(pr.deduction || 0));
+export const payrollNet = rowNet;
+// PF / ESIC / PT / TDS still to pay for a month: worked out on the payroll rows less what was paid
+export function statutoryDue(rows, payments, kind) {
+  const n = x => Number(x) || 0;
+  const tot = rows.reduce((s, p) => s + (kind === 'pf' ? n(p.pf_employee) + n(p.pf_employer) + n(p.pf_admin) : kind === 'esic' ? n(p.esic_employee) + n(p.esic_employer) : kind === 'pt' ? n(p.pt) : n(p.tds)), 0);
+  return r2(tot - payments.filter(s => s.kind === kind).reduce((s, x) => s + n(x.amount), 0));
+}
 export function addMonths(isoMonth, n) {
   const d = new Date(isoMonth.slice(0, 7) + '-01T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + n);
   return d.toISOString().slice(0, 10);

@@ -7,7 +7,7 @@ export const S = {
   memberships: [], companies: [], companyId: null, fy: null,
   // group data
   projects: [], accounts: [], accountCompanies: [], parties: [], items: [], categories: [],
-  vouchers: [], allocations: [], employees: [], payroll: [], fixedCosts: [], fixedCostPayments: [], budget: [],
+  vouchers: [], allocations: [], employees: [], payroll: [], fixedCosts: [], fixedCostPayments: [], statutoryPayments: [], budget: [],
   members: [], profiles: [], invitations: [], memberProjects: [],
   ix: null,
   listeners: new Set(),
@@ -57,12 +57,13 @@ export async function loadGroup() {
     b.list('member_projects', { company_id: S.companyId }),
   ]);
   Object.assign(S, { projects, accounts, accountCompanies, parties, items, categories, vouchers, allocations, employees, payroll, fixedCosts, members, invitations, memberProjects });
-  const [budget, fixedCostPayments, profiles] = await Promise.all([
+  const [budget, fixedCostPayments, profiles, statutoryPayments] = await Promise.all([
     projects.length ? b.list('project_budget_lines', { project_id: projects.map(p => p.id) }) : [],
     fixedCosts.length ? b.list('fixed_cost_payments', { fixed_cost_id: fixedCosts.map(f => f.id) }) : [],
     b.list('profiles', { id: members.map(m => m.user_id) }),
+    b.list('statutory_payments', { company_id: S.companyId }).catch(() => []),
   ]);
-  Object.assign(S, { budget, fixedCostPayments, profiles });
+  Object.assign(S, { budget, fixedCostPayments, profiles, statutoryPayments });
   S.projects.sort((a, b2) => a.name.localeCompare(b2.name));
   S.parties.sort((a, b2) => a.name.localeCompare(b2.name));
   S.items.sort((a, b2) => a.name.localeCompare(b2.name));

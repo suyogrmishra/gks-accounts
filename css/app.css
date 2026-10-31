@@ -291,3 +291,6 @@ td .bar, .stat .bar, .boq-stats .bar { margin-top: 6px; }
 .update-bar .notes, .update-bar .hint { display: block; font-size: .82rem; color: var(--muted); margin-top: 2px; }
 .update-bar .row { gap: 8px; margin-left: auto; }
 .app-version { display: block; opacity: .7; margin-top: 4px; }
+body.saving { cursor: progress; }
+body.saving .btn.primary, body.saving button[type=submit] { opacity: .65; }
+.danger-zone { border-color: var(--bad-bg); }

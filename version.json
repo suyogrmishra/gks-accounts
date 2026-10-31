@@ -1,1 +1,1 @@
-{ "version": "2026.10.31.2", "notes": "New-version notice; payroll with PF, ESIC, PT and payslips." }
+{ "version": "2026.10.31.3", "notes": "One click saves one entry. Delete for entries (tick several in Day Book), duplicates finder, and delete for projects, items, accounts, employees, fixed costs, categories and empty companies." }

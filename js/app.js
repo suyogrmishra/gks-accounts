@@ -1,5 +1,5 @@
 // App shell: sign-in, navigation, company / year switching, and routing to screens.
-import { createBackend, errorText } from './backend.js';
+import { createBackend, errorText, busy } from './backend.js';
 import { startUpdateCheck } from './update.js';
 import { S, company, loadMemberships, loadGroup, switchCompany, setFY, isAdmin, canManageStaff, myMembership, onChange } from './store.js';
 import { $, esc, toast, modal, formData, today } from './ui.js';
@@ -194,6 +194,17 @@ document.addEventListener('click', async e => {
 });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 startUpdateCheck();
+// Double-click / slow network guard: while something is being saved, further submits and action clicks are ignored
+document.addEventListener('submit', e => {
+  if (busy.n > 0 || e.target.dataset.submitting === '1') { e.preventDefault(); e.stopImmediatePropagation(); toast('Still saving — please wait'); return; }
+  const f = e.target; f.dataset.submitting = '1';
+  const release = () => { if (busy.n > 0) return setTimeout(release, 100); delete f.dataset.submitting; };
+  setTimeout(release, 0);   // free again as soon as nothing is saving (e.g. after a validation message)
+}, true);
+document.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || busy.n === 0) return;
+  if (b.type === 'submit' || b.matches('.btn.primary, .btn.danger, [data-act], [data-payfc], [data-stat], [data-pay], [data-update], [data-rmpr], [data-del]')) { e.preventDefault(); e.stopImmediatePropagation(); toast('Still saving — please wait'); }
+}, true);
 
 // Sign out after 30 minutes without any activity (live books only)
 const IDLE_MS = 30 * 60 * 1000; let idleTimer;

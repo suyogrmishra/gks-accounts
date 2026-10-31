@@ -108,7 +108,17 @@ export class DemoBackend {
     }
     this.save(); return structuredClone(out);
   }
-  async remove(table, match) { this._del(table, r => this._match(r, match)); this.save(); }
+  async remove(table, match) {
+    // same protection as the database's foreign keys: records used by entries cannot be removed
+    const rows = this.db[table].filter(r => this._match(r, match)), ids = new Set(rows.map(r => r.id));
+    const usedBy = { projects: v => ids.has(v.project_id), money_accounts: v => ids.has(v.account_id) || ids.has(v.to_account_id), categories: v => ids.has(v.category_id), parties: v => ids.has(v.party_id) };
+    if (usedBy[table] && this.db.vouchers.some(usedBy[table])) { const e = new Error('violates foreign key constraint'); e.code = '23503'; throw e; }
+    if (table === 'items' && this.db.voucher_lines.some(l => ids.has(l.item_id))) { const e = new Error('violates foreign key constraint'); e.code = '23503'; throw e; }
+    if (table === 'employees') this._del('payroll', p => ids.has(p.employee_id));
+    if (table === 'projects') this._del('project_budget_lines', b => ids.has(b.project_id));
+    if (table === 'fixed_costs') this._del('fixed_cost_payments', x => ids.has(x.fixed_cost_id));
+    this._del(table, r => this._match(r, match)); this.save();
+  }
 
   async rpc(name, args) {
     const snapshot = JSON.stringify(this.db);
@@ -377,6 +387,16 @@ export class DemoBackend {
       this._upd('payroll', pr, { voucher_id: v.id, paid_on: p_date }); n++;
     }
     return n;
+  }
+  rpc_delete_company({ p_company }) {
+    if (this.role(p_company) !== 'admin') fail('Only an admin of this company can delete it.');
+    const n = this.db.vouchers.filter(v => v.company_id === p_company && !v.deleted_at).length;
+    if (n) fail(`This company still has ${n} entries. Delete them first.`);
+    for (const pr of this.db.projects.filter(x => x.owner_company_id === p_company)) pr.owner_company_id = null;
+    const vids = new Set(this.db.vouchers.filter(v => v.company_id === p_company).map(v => v.id));
+    this._del('voucher_lines', l => vids.has(l.voucher_id)); this._del('allocations', a => vids.has(a.from_voucher_id) || vids.has(a.to_voucher_id)); this._del('vouchers', v => vids.has(v.id));
+    for (const t of ['company_members', 'invitations', 'member_projects', 'parties', 'items', 'categories', 'money_account_companies', 'counters', 'employees', 'payroll', 'fixed_costs', 'statutory_payments']) this._del(t, r => r.company_id === p_company);
+    this._del('companies', c => c.id === p_company);
   }
   rpc_pay_statutory({ p_company, p_month, p_kind, p_date, p_account, p_amount }) {
     if (!['admin', 'accountant'].includes(this.role(p_company))) fail('Only an admin or accountant can pay PF, ESIC, PT or TDS.');

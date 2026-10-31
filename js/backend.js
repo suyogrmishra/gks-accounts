@@ -63,7 +63,17 @@ class SupabaseBackend {
   async rpc(name, args) { const { data, error } = await this.sb.rpc(name, args); if (error) throw error; return data; }
 }
 
-export function createBackend() {
+// Count saves in progress, so the screen can refuse a second click while the first is still saving
+export const busy = { n: 0 };
+function trackWrites(b) {
+  for (const m of ['insert', 'update', 'upsert', 'remove', 'rpc']) {
+    const orig = b[m].bind(b);
+    b[m] = async (...a) => { busy.n++; document.body.classList.add('saving'); try { return await orig(...a); } finally { if (--busy.n <= 0) { busy.n = 0; document.body.classList.remove('saving'); } } };
+  }
+  return b;
+}
+export function createBackend() { return trackWrites(makeBackend()); }
+function makeBackend() {
   if (CONFIG.mode !== 'live' || !CONFIG.supabaseKey) return new DemoBackend();
   try { localStorage.removeItem('gks2.mode'); localStorage.removeItem('gks2.demo.db.v4'); } catch {}
   if (!window.supabase) throw new Error('Could not load the database library. Check your internet connection and reload.');
@@ -74,6 +84,7 @@ export function createBackend() {
 export function errorText(e) {
   const m = String(e?.message || e || 'Something went wrong');
   if (/duplicate key.*(parties|items|categories|projects)/i.test(m) || e?.code === '23505') return 'That name already exists.';
+  if (e?.code === '23503' || /foreign key constraint/i.test(m)) return 'This is still used by entries (including deleted ones kept in the history), so it cannot be deleted. Mark it inactive instead.';
   if (/Failed to fetch|NetworkError/i.test(m)) return 'No internet connection. Nothing was saved — try again.';
   if (/row-level security|permission denied/i.test(m)) return 'Your role does not allow this.';
   if (/JWT expired/i.test(m)) return 'Your session expired. Please sign in again.';

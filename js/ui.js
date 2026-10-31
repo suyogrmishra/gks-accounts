@@ -99,7 +99,7 @@ export function debounce(fn, ms = 200) { let t; return (...a) => { clearTimeout(
 // Simple sortable table: cols = [{key,label,num,render,sortVal}]
 export function table(cols, rows, { empty = 'Nothing to show yet.', foot, rowAttr, id } = {}) {
   if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
-  const head = cols.map((c, i) => `<th class="${c.num ? 'num' : ''}" data-col="${i}">${esc(c.label)}</th>`).join('');
+  const head = cols.map((c, i) => `<th class="${c.num ? 'num' : ''}" data-col="${i}">${c.headHtml ?? esc(c.label)}</th>`).join('');
   const body = rows.map(r => `<tr ${rowAttr ? rowAttr(r) : ''}>${cols.map(c => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}" data-label="${esc(c.label)}">${c.render ? c.render(r) : esc(r[c.key])}</td>`).join('')}</tr>`).join('');
   const f = foot ? `<tfoot><tr>${foot.map((x, i) => `<td class="${cols[i]?.num ? 'num' : ''}">${x ?? ''}</td>`).join('')}</tr></tfoot>` : '';
   return `<div class="table-wrap"><table ${id ? `id="${id}"` : ''}><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${f}</table></div>`;

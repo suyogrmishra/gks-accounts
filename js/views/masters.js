@@ -8,6 +8,7 @@ import { viewVoucher } from './entry.js';
 import { go, reload } from '../app.js';
 import { requireAdminPin } from '../pin.js';
 import { analyseProject, COST_TYPES, parsePasted, num } from '../budget.js';
+import { delBtn, deleteRecord, plural } from '../remove.js';
 
 const open = root => root.addEventListener('click', e => { const tr = e.target.closest('[data-v]'); if (tr && !e.target.closest('button')) viewVoucher(tr.dataset.v); });
 async function attempt(fn, ok) { try { await fn(); await reload(); if (ok) toast(ok); return true; } catch (err) { toast(errorText(err), 'error'); return false; } }
@@ -45,7 +46,12 @@ function accountForm(a) {
     <label>Bank name<input name="bank_name" value="${a?.bank_name || ''}"></label><label>Last 4 digits<input name="account_last4" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" value="${a?.account_last4 || ''}"></label>
     <label>IFSC<input name="ifsc" value="${a?.ifsc || ''}"></label>
     ${!a ? html`<label>Opening balance in ${company().name}<input type="number" step="0.01" name="opening" value="0"></label>` : html`<label class="check"><input type="checkbox" name="active" ${a.active ? 'checked' : ''}> Active</label>`}
-    </div><p class="small muted">Store only the last 4 digits. Never enter PINs or passwords here.</p><div class="row end"><button class="btn primary">Save</button></div></form>`));
+    </div><p class="small muted">Store only the last 4 digits. Never enter PINs or passwords here.</p><div class="row end">${raw(delBtn(!!a))}<button class="btn primary">Save</button></div></form>`));
+  m.el.querySelector('[data-del]')?.addEventListener('click', () => {
+    const n = S.vouchers.filter(v => v.account_id === a.id || v.to_account_id === a.id).length;
+    deleteRecord({ what: 'account', name: a.name, used: n ? `it is used on ${plural(n, 'entry', 'entries')}. Untick “Active” to hide it instead.` : '',
+      run: async () => { await S.backend.remove('money_account_companies', { account_id: a.id }); await S.backend.remove('money_accounts', { id: a.id }); }, done: () => m.close() });
+  });
   m.el.querySelector('form').onsubmit = async e => {
     e.preventDefault(); const d = formData(e.target); const opening = d.opening; delete d.opening;
     const ok = await attempt(async () => {
@@ -105,7 +111,12 @@ function projectForm(p) {
     <label>Work order no.<input name="work_order_no" value="${p?.work_order_no || ''}"></label><label>Work order date<input type="date" name="work_order_date" value="${p?.work_order_date || ''}"></label>
     <label>Order value (₹)<input type="number" step="0.01" min="0" name="order_value" value="${p?.order_value || ''}"></label><label>Days to complete<input type="number" min="0" name="days_to_complete" value="${p?.days_to_complete || ''}"></label>
     ${p ? html`<label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}> Active (untick when closed)</label>` : ''}
-    </div><div class="row end"><button class="btn primary">Save</button></div></form>`));
+    </div><div class="row end">${raw(delBtn(!!p))}<button class="btn primary">Save</button></div></form>`));
+  m.el.querySelector('[data-del]')?.addEventListener('click', () => {
+    const n = S.vouchers.filter(v => v.project_id === p.id).length, emp = S.employees.filter(x => x.project_id === p.id).length, fc = S.fixedCosts.filter(x => x.project_id === p.id).length;
+    const used = n ? `it has ${plural(n, 'entry', 'entries')}. Untick “Active” to close it instead.` : emp || fc ? `employees or fixed costs are linked to it. Change them first.` : '';
+    deleteRecord({ what: 'project', name: p.name, used, run: () => S.backend.remove('projects', { id: p.id }), done: () => { m.close(); if (location.hash.includes('id=' + p.id)) location.hash = '#/projects'; } });
+  });
   m.el.querySelector('form').onsubmit = async e => {
     e.preventDefault(); const d = formData(e.target); d.order_value = d.order_value || 0;
     if (!isAdmin()) delete d.owner_company_id;
@@ -367,7 +378,11 @@ function itemForm(it) {
     <label>Opening qty<input type="number" step="any" name="opening_qty" value="${it?.opening_qty ?? 0}"></label><label>Opening rate<input type="number" step="0.01" name="opening_rate" value="${it?.opening_rate ?? 0}"></label>
     <label>Low-stock alert at<input type="number" step="any" name="reorder_level" value="${it?.reorder_level ?? ''}"></label>
     ${it ? html`<label class="check"><input type="checkbox" name="active" ${it.active ? 'checked' : ''}> Active</label>` : ''}</div>
-    <div class="row end"><button class="btn primary">Save</button></div></form>`));
+    <div class="row end">${raw(delBtn(!!it))}<button class="btn primary">Save</button></div></form>`));
+  m.el.querySelector('[data-del]')?.addEventListener('click', () => {
+    const n = S.vouchers.filter(v => (v.lines || []).some(l => l.item_id === it.id)).length;
+    deleteRecord({ what: 'item', name: it.name, used: n ? `it is used on ${plural(n, 'entry', 'entries')}. Untick “Active” to hide it instead.` : '', run: () => S.backend.remove('items', { id: it.id }), done: () => m.close() });
+  });
   m.el.querySelector('form').onsubmit = async e => {
     e.preventDefault(); const d = formData(e.target); d.gst_rate = d.gst_rate === null ? null : Number(d.gst_rate); d.opening_qty = d.opening_qty || 0; d.opening_rate = d.opening_rate || 0;
     if (await attempt(() => it ? S.backend.update('items', { id: it.id }, d) : S.backend.insert('items', { ...d, company_id: S.companyId }), 'Item saved')) m.close();

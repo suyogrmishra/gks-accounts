@@ -8,6 +8,7 @@ import { payslip, payrollFields, settingsOf, structureOf, grossOf, rowNet, daysI
 import { viewVoucher } from './entry.js';
 import { reload, addCompanyForm } from '../app.js';
 import { requireAdminPin } from '../pin.js';
+import { delBtn, deleteRecord, plural } from '../remove.js';
 
 async function attempt(fn, ok) { try { await fn(); await reload(); if (ok) toast(ok); return true; } catch (err) { toast(errorText(err), 'error'); return false; } }
 
@@ -59,7 +60,7 @@ export function payroll(el, { query }) {
           { label: 'TDS', num: true, render: r => r.p ? inp(r.p, 'tds') : '' },
           { label: 'Advance / other', num: true, render: r => r.p ? inp(r.p, 'deduction') : '' },
           { label: 'Net pay', num: true, render: r => r.p ? `<b>${money(rowNet(r.p))}</b>` : '<span class="muted">not added</span>' },
-          { label: 'Status', render: r => (r.p?.voucher_id ? `<button class="link" data-open="${r.p.voucher_id}">Paid · ${esc(voucher(r.p.voucher_id)?.voucher_no || '')}</button>` : r.p?.paid_on ? `<span class="badge ok">Paid ${esc(fmtDate(r.p.paid_on))}</span>` : r.p ? '<span class="badge warn">Unpaid</span>' : '') + (r.p ? ` <button class="link small" data-slip="${r.p.id}">Payslip</button>` : '') }],
+          { label: 'Status', render: r => (r.p?.voucher_id ? `<button class="link" data-open="${r.p.voucher_id}">Paid · ${esc(voucher(r.p.voucher_id)?.voucher_no || '')}</button>` : r.p?.paid_on ? `<span class="badge ok">Paid ${esc(fmtDate(r.p.paid_on))}</span>` : r.p ? '<span class="badge warn">Unpaid</span>' : '') + (r.p ? ` <button class="link small" data-slip="${r.p.id}">Payslip</button>` : '') + (r.p && !isPaid(r.p) && isAdmin() ? ` <button class="link small neg" data-rmpr="${r.p.id}">Remove</button>` : '') }],
           rows, { empty: 'No employees. Add them in the Employees tab.', foot: ['', 'Total', '', money(tot('earned_gross')), money(tot('overtime')), money(tot('bonus')), money(tot('pf_employee')), money(tot('esic_employee')), money(tot('pt')), money(tot('tds')), money(tot('deduction')), money(tot(rowNet)), ''] }))}
         ${withP.length ? html`<div class="grid g4" style="margin-top:12px">
           <div class="stat"><div class="k">Salary earned</div><div class="v">${money(tot(p => Number(p.earned_gross) + Number(p.overtime) + Number(p.bonus)))}</div><div class="s">Before deductions</div></div>
@@ -99,6 +100,7 @@ export function payroll(el, { query }) {
     if (b.dataset.tab) { tab = b.dataset.tab; window.history.replaceState(null, '', '#/payroll?tab=' + tab); $$('.tabs button', el).forEach(x => x.classList.toggle('active', x === b)); draw(); }
     if (b.dataset.open) viewVoucher(b.dataset.open);
     if (b.dataset.slip) payslipView(S.payroll.find(p => p.id === b.dataset.slip));
+    if (b.dataset.rmpr) { const p = S.payroll.find(x => x.id === b.dataset.rmpr); deleteRecord({ what: 'payroll row', name: `${emp(p.employee_id)?.name || ''} — ${fmtMonth(p.month)}`, used: isPaid(p) ? 'it is already paid. Delete the salary entry first.' : '', run: () => S.backend.remove('payroll', { id: p.id }) }); }
     if (b.dataset.act === 'addEmp' || b.dataset.emp) employeeForm(S.employees.find(x => x.id === b.dataset.emp));
     if (b.dataset.act === 'addFixed' || b.dataset.fc) fixedForm(S.fixedCosts.find(x => x.id === b.dataset.fc));
     if (b.dataset.payfc) payFixed(S.fixedCosts.find(x => x.id === b.dataset.payfc));
@@ -187,7 +189,11 @@ function employeeForm(x) {
     <label>PAN<input name="pan" value="${x?.pan || ''}" maxlength="10" style="text-transform:uppercase"></label>
     ${x ? html`<label class="check"><input type="checkbox" name="active" ${x.active ? 'checked' : ''}> Currently employed</label>` : ''}</div>
     <div id="empPrev" class="boq-block"></div>
-    <div class="row end"><button class="btn primary">Save</button></div></form>`), { wide: true });
+    <div class="row end">${raw(delBtn(!!x))}<button class="btn primary">Save</button></div></form>`), { wide: true });
+  m.el.querySelector('[data-del]')?.addEventListener('click', () => {
+    const paid = S.payroll.filter(p => p.employee_id === x.id && (p.voucher_id || p.paid_on)).length;
+    deleteRecord({ what: 'employee', name: x.name, used: paid ? `salary has been paid for ${plural(paid, 'month')}. Untick “Currently employed” instead.` : '', run: () => S.backend.remove('employees', { id: x.id }), done: () => m.close() });
+  });
   const f = m.el.querySelector('form');
   const preview = () => {
     const d = formData(f); const s = payslip({ ...x, ...d }, { month: today().slice(0, 7) + '-01', working_days: 30, present_days: 30 }, c);
@@ -216,7 +222,11 @@ function fixedForm(f) {
     <label>Monthly amount<input type="number" step="0.01" min="0.01" name="monthly_amount" required value="${f?.monthly_amount || ''}"></label>
     <label>From month<input type="month" name="start_month" required value="${(f?.start_month || today()).slice(0, 7)}"></label><label>Until month (optional)<input type="month" name="end_month" value="${(f?.end_month || '').slice(0, 7)}"></label>
     <label class="full">Notes<input name="notes" value="${f?.notes || ''}"></label>${f ? html`<label class="check"><input type="checkbox" name="active" ${f.active ? 'checked' : ''}> Active</label>` : ''}</div>
-    <div class="row end"><button class="btn primary">Save</button></div></form>`));
+    <div class="row end">${raw(delBtn(!!f))}<button class="btn primary">Save</button></div></form>`));
+  m.el.querySelector('[data-del]')?.addEventListener('click', () => {
+    const n = S.fixedCostPayments.filter(x => x.fixed_cost_id === f.id && voucher(x.voucher_id)).length;
+    deleteRecord({ what: 'fixed cost', name: f.name, used: n ? `${plural(n, 'payment')} made against it. Untick “Active” to stop it instead.` : '', run: () => S.backend.remove('fixed_costs', { id: f.id }), done: () => m.close() });
+  });
   m.el.querySelector('form').onsubmit = async e => {
     e.preventDefault(); const d = formData(e.target); d.start_month += '-01'; d.end_month = d.end_month ? d.end_month + '-01' : null;
     if (!d.name || !(d.monthly_amount > 0) || !d.start_month) return toast('Enter cost name, monthly amount, and start month.', 'error');
@@ -310,9 +320,12 @@ export function settings(el) {
         ${f('esic_employer_rate', 'ESIC employer %')}${f('esic_exempt_daily', 'No ESIC employee share up to daily wage (₹)', '1')}
         <label>Professional Tax<select name="pt_state">${raw(options(PT_STATES, pc.pt_state))}</select></label>`; })()}</div>
       <div class="row between"><button class="btn ghost" type="button" id="prReset">Use defaults</button><button class="btn primary">Save payroll rules</button></div></form>
-    <div class="card"><h3>Expense categories</h3><div class="row" id="cats">${categories().map(x => html`<span class="badge ${x.active ? '' : 'warn'}">${x.name} <button class="link small" data-cat="${x.id}" title="${x.active ? 'Hide' : 'Show'}">${x.active ? '✕' : '↺'}</button></span>`)}</div>
+    <div class="card"><h3>Expense categories</h3><div class="row" id="cats">${categories().map(x => html`<span class="badge ${x.active ? '' : 'warn'}">${x.name} <button class="link small" data-cat="${x.id}" title="${x.active ? 'Hide' : 'Show'}">${x.active ? '✕' : '↺'}</button>${raw(S.vouchers.some(v => v.category_id === x.id) || S.fixedCosts.some(f => f.category_id === x.id) ? '' : `<button class="link small neg" data-delcat="${x.id}" title="Delete">🗑</button>`)}</span>`)}</div>
+      <p class="small muted">✕ hides a category from lists; 🗑 deletes one that no entry uses.</p>
       <form id="catForm" class="toolbar" style="margin-top:.75rem"><label class="grow">New category<input name="name" required></label><label>Kind<select name="kind">${raw(options([['expense', 'Expense'], ['income', 'Other income'], ['capital', 'Capital'], ['other', 'Other']], 'expense'))}</select></label><button class="btn">Add</button></form></div>
 ` : ''}
+    ${admin ? html`<div class="card danger-zone"><h3>Delete this company</h3><p class="small muted">Only a company with no entries can be deleted — for example one created twice by mistake. Delete its entries first if needed. Everything else in it (parties, items, employees, users' access) is removed with it.</p>
+      <div class="row end"><button class="btn danger" id="delCo">Delete ${c.name}</button></div></div>` : ''}
     <div class="card"><h3>Your account</h3><div class="row"><span>${S.user.email}</span><span class="badge">${myMembership()?.role}</span><div class="grow"></div>
       ${S.backend.mode === 'live' ? raw('<button class="btn" id="pwBtn">Change password</button>') : raw('<button class="btn danger" id="resetDemo">Reset demo data</button>')}</div></div>`);
 
@@ -383,6 +396,13 @@ export function settings(el) {
     if (b.dataset.uninvite) await attempt(() => S.backend.remove('invitations', { id: b.dataset.uninvite }), 'Invitation cancelled');
     if (b.dataset.cat) { const cat = S.categories.find(x => x.id === b.dataset.cat); await attempt(() => S.backend.update('categories', { id: cat.id }, { active: !cat.active })); }
     if (b.dataset.projs) pickProjects(b.dataset.projs);
+    if (b.dataset.delcat) { const cat = S.categories.find(x => x.id === b.dataset.delcat); deleteRecord({ what: 'category', name: cat.name, used: S.vouchers.some(v => v.category_id === cat.id) ? 'entries use it. Hide it instead.' : '', run: () => S.backend.remove('categories', { id: cat.id }) }); }
+    if (b.id === 'delCo') {
+      const n = S.vouchers.filter(v => v.company_id === c.id).length;
+      if (n) return toast(`${c.name} has ${plural(n, 'entry', 'entries')}. Delete them first (Day Book → tick → Delete selected), then delete the company.`, 'error');
+      if (!await requireAdminPin('delete this company') || !await confirmBox(`Delete the company “${c.name}” and everything set up in it? This cannot be undone.`, { ok: 'Delete company', danger: true })) return;
+      try { await S.backend.rpc('delete_company', { p_company: c.id }); localStorage.removeItem('gks2.company'); toast('Company deleted'); setTimeout(() => location.reload(), 600); } catch (err) { toast(errorText(err), 'error'); }
+    }
     if (b.dataset.hide) pickHidden(b.dataset.hide);
   });
   function pickProjects(uid) {

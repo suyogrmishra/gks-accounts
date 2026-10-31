@@ -366,7 +366,14 @@ function form(el, st) {
     renderTotals(); allocSummary();
   }
 
+  // one click = one entry: ignore further clicks / Enter presses until this save has finished
+  let saving = false;
   async function save() {
+    if (saving) return;
+    saving = true;
+    try { await saveOnce(); } finally { saving = false; }
+  }
+  async function saveOnce() {
     const msg = $('#formMsg', el), btn = $('#saveBtn', el); msg.textContent = '';
     const t = st.voucher_type, def = T();
     const p = {

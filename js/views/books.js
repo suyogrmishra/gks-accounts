@@ -6,6 +6,11 @@ import { $, $$, esc, html, raw, options, modal, fmtDate, fmtMonth, today, table,
 import { viewVoucher } from './entry.js';
 import { go } from '../app.js';
 import { analyseProject } from '../budget.js';
+import { isAdmin } from '../store.js';
+import { confirmBox, toast } from '../ui.js';
+import { requireAdminPin } from '../pin.js';
+import { reload } from '../app.js';
+import { errorText } from '../backend.js';
 
 const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5);
 const cls = n => n < 0 ? 'neg' : n > 0 ? 'pos' : '';
@@ -133,34 +138,53 @@ export function entries(el, { query }) {
   const { from, to } = fyBounds();
   const f = { type: query.get('type') || '', from, to, project: query.get('project') || '', q: '', status: '' };
   el.innerHTML = String(html`<div class="page-head"><div><h2>Day Book</h2><p>Every entry for the selected company and year. Tap a row to view, edit or print.</p></div>
-    <div class="row"><button class="btn" id="csv">Export CSV</button><button class="btn" id="print">Print</button></div></div>
+    <div class="row">${isAdmin() ? raw('<button class="btn danger hidden" id="delSel">Delete selected</button>') : ''}<button class="btn" id="csv">Export CSV</button><button class="btn" id="print">Print</button></div></div>
     <div class="card"><div class="toolbar">
       <label>Type<select id="fType">${raw(options(Object.entries(TYPES).map(([k, t]) => [k, t.label]), f.type, { blank: 'All types' }))}</select></label>
       <label>From<input type="date" id="fFrom" value="${f.from}"></label><label>To<input type="date" id="fTo" value="${f.to}"></label>
       <label>Project<select id="fProject">${raw(options([['none', 'General / no project'], ...visibleProjects().map(p => [p.id, p.name])], f.project, { blank: 'All projects' }))}</select></label>
-      <label>Status<select id="fStatus">${raw(options([['due', 'Pending bills'], ['adv', 'Has advance / unapplied']], f.status, { blank: 'Any' }))}</select></label>
+      <label>Status<select id="fStatus">${raw(options([['due', 'Pending bills'], ['adv', 'Has advance / unapplied'], ['dup', 'Possible duplicates']], f.status, { blank: 'Any' }))}</select></label>
       <label class="grow">Search<input id="fQ" placeholder="Party, number, reference, note…"></label>
     </div><div id="list"></div></div>`);
+  // entries that look the same (type, date, party/account, amount, reference) — usually saved twice by mistake
+  const dupKey = v => [v.voucher_type, v.voucher_date, v.party_id || '', v.account_id || '', Number(v.total_amount).toFixed(2), v.ref_no || ''].join('|');
+  const dups = new Map(); for (const v of cv()) dups.set(dupKey(v), (dups.get(dupKey(v)) || 0) + 1);
   const rows = () => cv().filter(v => (!f.type || v.voucher_type === f.type) && v.voucher_date >= f.from && v.voucher_date <= f.to &&
     (!f.project || (f.project === 'none' ? !v.project_id : v.project_id === f.project)) &&
-    (!f.status || (f.status === 'due' ? pending(v) > 0.004 : unalloc(v) > 0.004)) &&
+    (!f.status || (f.status === 'due' ? pending(v) > 0.004 : f.status === 'dup' ? dups.get(dupKey(v)) > 1 : unalloc(v) > 0.004)) &&
     (!f.q || [v.voucher_no, v.ref_no, v.notes, partyName(v.party_id), projectName(v.project_id), categoryName(v.category_id), ...(v.lines || []).map(l => l.description)].join(' ').toLowerCase().includes(f.q)))
     .sort((a, b) => b.voucher_date.localeCompare(a.voucher_date) || b.voucher_no.localeCompare(a.voucher_no));
+  const sel = new Set();
   const cols = [
+    ...(isAdmin() ? [{ label: 'Select', headHtml: '<input type="checkbox" id="selAll" aria-label="Select all shown">', render: v => `<input type="checkbox" class="delsel" value="${v.id}" ${sel.has(v.id) ? 'checked' : ''} aria-label="Select ${esc(v.voucher_no)}">` }] : []),
     { label: 'Date', render: v => fmtDate(v.voucher_date) },
     { label: 'Entry', render: v => `<b>${esc(v.voucher_no)}</b><span class="sub">${esc(TYPES[v.voucher_type].label)}</span>` },
     { label: 'Party / account', render: v => `${esc(partyName(v.party_id) || accountName(v.account_id))}${v.ref_no ? `<span class="sub">${esc(v.ref_no)}</span>` : ''}` },
     { label: 'Project', render: v => esc(projectName(v.project_id)) || '<span class="muted">—</span>' },
     { label: 'Amount', num: true, render: v => money(v.total_amount) },
-    { label: 'Status', render: v => { const s = voucherStatus(v); return s.text ? `<span class="badge ${s.cls}">${esc(s.text)}</span>` : ''; } },
+    { label: 'Status', render: v => { const s = voucherStatus(v); return (s.text ? `<span class="badge ${s.cls}">${esc(s.text)}</span>` : '') + (dups.get(dupKey(v)) > 1 ? ' <span class="badge warn" title="Another entry has the same type, date, party and amount">possible duplicate</span>' : ''); } },
   ];
+  const selBtn = () => { const b = $('#delSel', el); if (b) { b.classList.toggle('hidden', !sel.size); b.textContent = `Delete selected (${sel.size})`; } };
+  el.addEventListener('change', e => {
+    if (e.target.classList.contains('delsel')) { e.target.checked ? sel.add(e.target.value) : sel.delete(e.target.value); selBtn(); }
+    if (e.target.id === 'selAll') { rows().slice(0, 1000).forEach(v => e.target.checked ? sel.add(v.id) : sel.delete(v.id)); draw(); const a = $('#selAll', el); if (a) a.checked = e.target.checked; selBtn(); }
+  });
+  $('#delSel', el)?.addEventListener('click', async () => {
+    const list = [...sel].map(id => S.vouchers.find(v => v.id === id)).filter(Boolean); if (!list.length) return;
+    if (!await requireAdminPin('delete entries')) return;
+    if (!await confirmBox(`Delete ${list.length} entr${list.length === 1 ? 'y' : 'ies'} (${list.slice(0, 5).map(v => v.voucher_no).join(', ')}${list.length > 5 ? '…' : ''})? Their links to bills / payments are removed. This is recorded in the change history.`, { ok: 'Delete', danger: true })) return;
+    let ok = 0; const errs = [];
+    for (const v of list) { try { await S.backend.rpc('delete_voucher', { p_id: v.id }); ok++; } catch (err) { errs.push(`${v.voucher_no}: ${errorText(err)}`); } }
+    sel.clear(); await reload();
+    toast(errs.length ? `${ok} deleted. Not deleted — ${errs[0]}${errs.length > 1 ? ` (+${errs.length - 1} more)` : ''}` : `${ok} entr${ok === 1 ? 'y' : 'ies'} deleted`, errs.length ? 'error' : undefined);
+  });
   const draw = () => { const r = rows(); $('#list', el).innerHTML = table(cols, r.slice(0, 1000), { empty: 'No entries match these filters.', rowAttr: v => `class="click" data-v="${v.id}"` }) + (r.length > 1000 ? `<p class="small muted">Showing the latest 1,000 of ${r.length}. Narrow the dates to see more.</p>` : ''); };
   const bind = (id, k, ev = 'change') => $(id, el).addEventListener(ev, e => { f[k] = k === 'q' ? e.target.value.trim().toLowerCase() : e.target.value; draw(); });
   bind('#fType', 'type'); bind('#fFrom', 'from'); bind('#fTo', 'to'); bind('#fProject', 'project'); bind('#fStatus', 'status');
   $('#fQ', el).addEventListener('input', debounce(e => { f.q = e.target.value.trim().toLowerCase(); draw(); }));
   $('#csv', el).onclick = () => downloadCSV(`Day book ${f.from} to ${f.to}`, ['Date', 'No', 'Type', 'Party', 'Reference', 'Project', 'Category', 'Taxable', 'CGST', 'SGST', 'IGST', 'Total', 'TDS', 'Net', 'Pending', 'Notes'],
     rows().map(v => [v.voucher_date, v.voucher_no, TYPES[v.voucher_type].label, partyName(v.party_id), v.ref_no, projectName(v.project_id), categoryName(v.category_id), v.taxable_amount, v.cgst_amount, v.sgst_amount, v.igst_amount, v.total_amount, v.tds_amount, v.net_amount, pending(v), v.notes]));
-  $('#print', el).onclick = () => printHTML(`${company().name} — Day Book ${fmtDate(f.from)} to ${fmtDate(f.to)}`, table(cols.slice(0, 5), rows()));
+  $('#print', el).onclick = () => printHTML(`${company().name} — Day Book ${fmtDate(f.from)} to ${fmtDate(f.to)}`, table(cols.filter(c => c.label !== 'Select').slice(0, 5), rows()));
   openRows(el); draw();
 }
 

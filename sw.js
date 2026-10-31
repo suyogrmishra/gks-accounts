@@ -1,5 +1,5 @@
-// Minimal service worker: lets the app be installed, and removes the old app's offline cache.
-// It does not cache anything itself — every request goes to the network, so you always get the latest version.
+// Service worker v3: lets the app be installed, removes old offline caches, and makes sure every
+// file is checked with the server on each load (cache: no-cache), so a newly published version is used at once.
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
@@ -7,4 +7,10 @@ self.addEventListener('activate', event => {
     await self.clients.claim();
   })());
 });
-self.addEventListener('fetch', () => { /* network only */ });
+self.addEventListener('fetch', event => {
+  const req = event.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  event.respondWith(req.mode === 'navigate'
+    ? fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }).catch(() => fetch(req))
+    : fetch(req, { cache: 'no-cache' }).catch(() => fetch(req)));
+});

@@ -1,5 +1,6 @@
 // App shell: sign-in, navigation, company / year switching, and routing to screens.
 import { createBackend, errorText } from './backend.js';
+import { startUpdateCheck } from './update.js';
 import { S, company, loadMemberships, loadGroup, switchCompany, setFY, isAdmin, canManageStaff, myMembership, onChange } from './store.js';
 import { $, esc, toast, modal, formData, today } from './ui.js';
 import { fyLabel } from './calc.js';
@@ -192,6 +193,7 @@ document.addEventListener('click', async e => {
   installPrompt.prompt(); await installPrompt.userChoice.catch(() => null); installPrompt = null; e.target.classList.add('hidden');
 });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+startUpdateCheck();
 
 // Sign out after 30 minutes without any activity (live books only)
 const IDLE_MS = 30 * 60 * 1000; let idleTimer;
